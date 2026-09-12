@@ -52,7 +52,7 @@
 #   binding        {harness, pid, sessionId, transcriptPath, boundAt}
 #   context        {tokens|null, reliability: reliable|unknown, reason}
 #   quota verdict  {provider, exhausted:[{id,kind,resetsAt,percentUsed}],
-#                   reliability, ambiguousReset}
+#                   reliability, ambiguousReset, malformedWindow when true}
 #   decision       {action: none|alert|context|quota, incidentId, reason,
 #                   replacement, alertKey on alert actions}
 #   receipt        fields above; outcome stage is a separate file
@@ -82,8 +82,9 @@
 # Quota episodes: each exhausted window is claimed independently under
 # claims/<windowIncidentId>; an active episodes/<provider> file retains coverage
 # until a reliable below-threshold reading clears it, so a later window crossing
-# 97% does not mint a second terminal attempt. Missing/ambiguous resetsAt is
-# alert-only and never reliable.
+# 97% does not mint a second terminal attempt. Missing/ambiguous resetsAt and
+# malformed percentRemaining (non-numeric or outside 0..100) are alert-only
+# and never reliable.
 #
 # Test seams:
 #   FM_PRIMARY_RESOURCE_QUOTA_JSON / _FILE  inject quota-axi JSON
