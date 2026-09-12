@@ -42,9 +42,11 @@
 #                             deleted after attempt
 #   claims/<windowIncidentId> no-clobber one-shot claim per exhausted window
 #   episodes/<provider>       active quota-episode marker; cleared only by a
-#                             reliable below-threshold reading
+#                             reliable below-threshold reading of that provider
+#                             in the check's fresh all-provider quota reading
 #   helper-ready/<incidentId> helper acknowledgement marker
-#   .lock                     directory lock via fm_lock_*
+#   .lock                     directory lock via fm_lock_*; also serializes
+#                             outcome writes (terminal stages are final)
 #
 # Data shapes named before logic (canonical JSON values):
 #   binding        {harness, pid, sessionId, transcriptPath, boundAt}
@@ -88,6 +90,7 @@
 #   FM_PRIMARY_RESOURCE_NOW                fixed epoch seconds
 #   FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS   bound helper idle waits (default 30)
 #   FM_PRIMARY_RESOURCE_RECONCILE_SECS     stranded-helper alert bound (default 120)
+#   FM_PRIMARY_RESOURCE_STARTED_RECONCILE_SECS stalled-successor alert bound (default 1800)
 #   FM_PRIMARY_RESOURCE_BUSY_STATE_FILE    override busy|idle|unknown for helper
 #   FM_PRIMARY_RESOURCE_ROUTE_ENV_FILE     inject NUL-delimited environ for route checks
 #   FM_PRIMARY_RESOURCE_ARGV_FILE         inject NUL-delimited argv for commit capture (tests)
@@ -213,6 +216,13 @@ RECONCILE_SECS=${FM_PRIMARY_RESOURCE_RECONCILE_SECS:-120}
 case "$RECONCILE_SECS" in
   ''|*[!0-9]*) RECONCILE_SECS=120 ;;
 esac
+# The successor's success signal (binding sessionId) only advances at its first
+# turn end, which routinely runs minutes; the stalled-successor alert therefore
+# waits out a much longer stage-specific bound than the stranded-helper one.
+STARTED_RECONCILE_SECS=${FM_PRIMARY_RESOURCE_STARTED_RECONCILE_SECS:-1800}
+case "$STARTED_RECONCILE_SECS" in
+  ''|*[!0-9]*) STARTED_RECONCILE_SECS=1800 ;;
+esac
 
 pr_require_python3() {
   if ! command -v python3 >/dev/null 2>&1; then
@@ -309,6 +319,19 @@ pr_episode_clear_if_below() {  # <provider> <verdict-json>
   ')" = clear ]; then
     rm -f -- "$path"
   fi
+}
+
+# One fresh all-provider reading clears every episode marker that now reads
+# reliable with zero exhausted windows, including providers a handover switched
+# away from the primary binding.
+pr_episodes_clear_below() {  # <quota-json>
+  local f provider
+  for f in "$PR_DIR/episodes"/*; do
+    [ -f "$f" ] || continue
+    provider=${f##*/}
+    pr_episode_clear_if_below "$provider" "$(pr_quota_verdict "$provider" "$1")"
+  done
+  return 0
 }
 
 pr_claim_exists() {  # <windowIncidentId>
@@ -661,23 +684,29 @@ pr_quota_verdict() {  # <provider> <quota-json>
       elif (($p.quotaSemantics.status // "unknown") == "unknown") then
         {provider:$provider, exhausted:[], reliability:"unknown", ambiguousReset:false}
       else
-        ($p.windows // [])
-        | map(select((.kind == "session" or .kind == "five_hour" or .id == "five_hour"
-                      or .kind == "weekly" or .id == "seven_day")
-              and ((.percentRemaining | type) == "number")
-              and (.percentRemaining >= 0) and (.percentRemaining <= 100)))
-        | map(. + {percentUsed: (100 - .percentRemaining)})
-        | map(select(.percentUsed >= $thr)) as $hit
+        ($p.windows // []) as $all
+        | ($all | map(select(.kind == "session" or .kind == "five_hour" or .id == "five_hour"
+                             or .kind == "weekly" or .id == "seven_day"))) as $applicable
+        | ($applicable | map(select(((.percentRemaining | type) == "number")
+              and .percentRemaining >= 0 and .percentRemaining <= 100))) as $valid
+        | (($applicable | map(select(((.percentRemaining | type) != "number")
+              or .percentRemaining < 0 or .percentRemaining > 100))) | length) as $malformed
+        | ($valid | map(. + {percentUsed: (100 - .percentRemaining)})
+                   | map(select(.percentUsed >= $thr))) as $hit
         | ($hit | map(select((.resetsAt // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")))) as $reliable
         | ($hit | length) as $n
         | ($reliable | length) as $r
         | if $n > 0 and $r == 0 then
-            {provider:$provider, exhausted:[], reliability:"unknown", ambiguousReset:true}
+            {provider:$provider, exhausted:[], reliability:"unknown", ambiguousReset:true,
+             malformedWindow:($malformed > 0)}
           elif $n > $r then
             {provider:$provider,
              exhausted: ($reliable | map({id, kind, resetsAt, percentUsed})),
              reliability:(if $r > 0 then "reliable" else "unknown" end),
-             ambiguousReset:true}
+             ambiguousReset:true, malformedWindow:($malformed > 0)}
+          elif $malformed > 0 then
+            {provider:$provider, exhausted:[], reliability:"unknown", ambiguousReset:false,
+             malformedWindow:true}
           else
             {provider:$provider,
              exhausted: ($reliable | map({id, kind, resetsAt, percentUsed})),
@@ -870,7 +899,10 @@ pr_reconcile_stranded() {
         ;;
       started)
         # Success requires a new binding generation after reservation; absent that,
-        # a login-prompt or non-working successor is only caught here.
+        # a login-prompt or non-working successor is only caught here. The
+        # successor's first turn end is the only writer of that generation and
+        # routinely runs minutes, so this stage waits out a longer bound.
+        [ "$age" -ge "$STARTED_RECONCILE_SECS" ] || continue
         local bind_gen
         bind_gen=$(jq -r '.sessionId // "unknown"' "$PR_DIR/binding.json" 2>/dev/null || printf unknown)
         if [ "$bind_gen" = "$gen" ]; then
@@ -951,9 +983,12 @@ action_check() {
     qjson='{"schemaVersion":5,"providers":[]}'
   fi
 
+  # One fresh all-provider reading clears every provider's episode marker, not
+  # just the current binding's: a quota handover switches the primary away, and
+  # the round trip back depends on the old provider's marker clearing.
+  pr_episodes_clear_below "$qjson"
   if [ -n "$provider" ]; then
     verdict=$(pr_quota_verdict "$provider" "$qjson")
-    pr_episode_clear_if_below "$provider" "$verdict"
     replacement=$(pr_find_replacement "$harness" "$provider" "$qjson" "$pid")
   else
     verdict=$(printf '{"provider":"","exhausted":[],"reliability":"unknown","ambiguousReset":false}')
@@ -965,6 +1000,16 @@ action_check() {
     && [ "$(printf '%s' "$verdict" | jq -r '(.exhausted // []) | length')" = 0 ]; then
     if pr_alert_once "$generation" "quota-ambiguous-reset" \
       "primary-resource alert: quota reset identity ambiguous; session kept"; then
+      :
+    fi
+  fi
+
+  # Malformed applicable window (non-numeric or out-of-range percentRemaining):
+  # alert-only, never read the source as reliably below threshold.
+  if [ "$(printf '%s' "$verdict" | jq -r '.malformedWindow // false')" = true ] \
+    && [ "$(printf '%s' "$verdict" | jq -r '(.exhausted // []) | length')" = 0 ]; then
+    if pr_alert_once "$generation" "quota-malformed-window" \
+      "primary-resource alert: quota window reading malformed (percentRemaining non-numeric or out of range); session kept"; then
       :
     fi
   fi
@@ -1112,24 +1157,56 @@ pr_helper_endpoint_close() {  # <endpoint>
 }
 
 pr_outcome_write() {  # <incident> <stage> <reason> [<helper-endpoint>]
-  local id=$1 stage=$2 reason=$3 endpoint=${4:-} existing record_rc=0
-  if [ -z "$endpoint" ] && [ -f "$PR_DIR/outcomes/$id.json" ]; then
-    existing=$(jq -r '.helperEndpoint // empty' "$PR_DIR/outcomes/$id.json" 2>/dev/null || true)
-    endpoint=$existing
+  # Serialized read-merge-write under the resource lock; a caller already
+  # holding it (commit mid-critical-section) keeps its own hold.
+  local id=$1 stage=$2 reason=$3 endpoint=${4:-} cur='' prev='' record_rc=0 held=0
+  if fm_current_pid cur && [ "$(cat "$PR_DIR/.lock/pid" 2>/dev/null || true)" = "$cur" ]; then
+    held=1
+  elif pr_lock_acquire; then
+    held=2
   fi
-  if ! pr_ensure_dir; then
-    record_rc=1
+  if [ "$held" != 0 ]; then
+    if [ -f "$PR_DIR/outcomes/$id.json" ]; then
+      if [ -z "$endpoint" ]; then
+        endpoint=$(jq -r '.helperEndpoint // empty' "$PR_DIR/outcomes/$id.json" 2>/dev/null || true)
+      fi
+      prev=$(jq -r '.stage // empty' "$PR_DIR/outcomes/$id.json" 2>/dev/null || true)
+    fi
+    case "$prev" in
+      started|failed)
+        # Terminal outcomes are final: a late nonterminal writer must not
+        # resurrect waiting-idle over a concrete failure.
+        case "$stage" in
+          started|failed) ;;
+          *)
+            [ "$held" = 2 ] && pr_lock_release
+            return 0
+            ;;
+        esac
+        ;;
+    esac
+    if ! pr_ensure_dir; then
+      record_rc=1
+    else
+      pr_write_json_atomic "$PR_DIR/outcomes/$id.json" "$(jq -nc \
+        --argjson v "$SCHEMA_VERSION" \
+        --arg id "$id" \
+        --arg stage "$stage" \
+        --arg reason "$reason" \
+        --arg endpoint "$endpoint" \
+        --argjson t "$(pr_now)" \
+        '{version:$v, incidentId:$id, stage:$stage, reason:$reason, updatedAt:$t}
+         + if $endpoint == "" then {} else {helperEndpoint:$endpoint} end')" || record_rc=1
+    fi
   else
-    pr_write_json_atomic "$PR_DIR/outcomes/$id.json" "$(jq -nc \
-      --argjson v "$SCHEMA_VERSION" \
-      --arg id "$id" \
-      --arg stage "$stage" \
-      --arg reason "$reason" \
-      --arg endpoint "$endpoint" \
-      --argjson t "$(pr_now)" \
-      '{version:$v, incidentId:$id, stage:$stage, reason:$reason, updatedAt:$t}
-       + if $endpoint == "" then {} else {helperEndpoint:$endpoint} end')" || record_rc=1
+    # Could not serialize; never write unserialized, but still recover the
+    # endpoint so terminal cleanup runs.
+    record_rc=1
+    if [ -z "$endpoint" ] && [ -f "$PR_DIR/outcomes/$id.json" ]; then
+      endpoint=$(jq -r '.helperEndpoint // empty' "$PR_DIR/outcomes/$id.json" 2>/dev/null || true)
+    fi
   fi
+  [ "$held" = 2 ] && pr_lock_release
   case "$stage" in
     started|failed)
       rm -f -- "$PR_DIR/launch/$id.argv" "$PR_DIR/launch/$id.cmd" 2>/dev/null || true
@@ -1465,31 +1542,11 @@ action_commit() {
   # Under the resource lock: binding must still be the lock owner; re-read
   # evidence and refuse unless the same action remains warranted.
   PR_REVALIDATE_REASON=
-  if [ "${FM_PRIMARY_RESOURCE_FORCE_OWNER:-0}" != 1 ]; then
-    if ! pr_commit_revalidate "$incident" "$action"; then
-      pr_lock_release
-      printf 'fm-primary-resource: commit revalidation refused (%s)\n' \
-        "${PR_REVALIDATE_REASON:-action no longer warranted}" >&2
-      return 1
-    fi
-  else
-    # Test seam: still require binding pid == lock pid when a lock file exists.
-    if [ -f "$STATE/.lock" ] && [ -f "$PR_DIR/binding.json" ]; then
-      local lock_pid bind_pid
-      lock_pid=$(pr_lock_pid 2>/dev/null || true)
-      bind_pid=$(jq -r '.pid' "$PR_DIR/binding.json")
-      if [ -n "$lock_pid" ] && [ "$lock_pid" != "$bind_pid" ]; then
-        pr_lock_release
-        printf 'fm-primary-resource: binding pid does not own the session lock\n' >&2
-        return 1
-      fi
-    fi
-    if ! pr_commit_revalidate "$incident" "$action"; then
-      pr_lock_release
-      printf 'fm-primary-resource: commit revalidation refused (%s)\n' \
-        "${PR_REVALIDATE_REASON:-action no longer warranted}" >&2
-      return 1
-    fi
+  if ! pr_commit_revalidate "$incident" "$action"; then
+    pr_lock_release
+    printf 'fm-primary-resource: commit revalidation refused (%s)\n' \
+      "${PR_REVALIDATE_REASON:-action no longer warranted}" >&2
+    return 1
   fi
 
   src_h=$(jq -r '.harness' "$PR_DIR/binding.json")

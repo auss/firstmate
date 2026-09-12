@@ -7,7 +7,9 @@
 # at check and commit, secondmate no-op, unsupported-backend alert, commit
 # revalidation, structured stow attestation, argv admission via commit,
 # stranded-helper reconciliation, route-gateway refusal, per-window quota
-# episodes, Herdr handover guards, and a live isolated tmux
+# episodes (including non-primary marker clearing and malformed source
+# windows), Herdr handover guards, outcome-write serialization under the
+# resource lock, and a live isolated tmux
 # (-L private socket) exit->shell->successor path (skipped when tmux is absent).
 set -u
 
@@ -776,6 +778,123 @@ EOF
   pass "outcome write failure still closes the recorded helper pane"
 }
 
+# Round-3 regression: outcome writes are a serialized read-merge-write under the
+# resource lock. A live foreign holder (commit's critical section) must block
+# the helper's write, and the endpoint-carrying record that lands while the
+# helper waits must survive the helper's own writes through terminal cleanup.
+test_outcome_writers_serialize_under_resource_lock() {
+  local home incident calls holder helper_pid i reason stage endpoint
+  home=$(make_main_home outcome-lock)
+  incident=olock-1
+  calls="$home/herdr-calls"
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+  jq -nc '{version:1, harness:"codex", pid:999999005, sessionId:"olock", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  jq -nc --arg id "$incident" --argjson spid 999999005 --arg ssid "olock" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", destinationHarness:"codex"}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"waiting-idle", reason:"reserved"}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  printf 'idle\n' > "$home/busy"
+  cat > "$FAKEBIN/herdr" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+printf '%s\n' '{"result":{}}'
+EOF
+  chmod +x "$FAKEBIN/herdr"
+  # A live foreign writer holds the resource lock, standing in for commit's
+  # critical section.
+  (
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_acquire_wait "$home/state/primary-resource/.lock" || exit 1
+    printf 'held\n' > "$home/lock-held"
+    sleep 8
+    fm_lock_release "$home/state/primary-resource/.lock" || true
+  ) &
+  holder=$!
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -f "$home/lock-held" ]; do sleep 0.1; i=$((i + 1)); done
+  [ -f "$home/lock-held" ] || { kill "$holder" 2>/dev/null || true; fail "lock holder fixture failed to acquire"; }
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="sess:p0" FM_SUPERVISOR_BACKEND=herdr \
+    FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=2 FM_PRIMARY_RESOURCE_LOCK_SECS=25 \
+    PATH="$FAKEBIN:$PATH" \
+    "$PR" helper "$incident" >/dev/null 2>&1 &
+  helper_pid=$!
+  sleep 4
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  assert_equals "reserved" "$reason" \
+    "a helper outcome write must not land while another writer holds the resource lock"
+  # Commit's half of the race lands while the helper is blocked; the serialized
+  # helper must read it after, never clobber it.
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"waiting-idle", reason:"helper-launched",
+      helperEndpoint:"herdr:sess:helper:p1:workspace", updatedAt:2}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  wait "$holder" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 100 ] \
+    && [ "$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true)" != failed ]; do
+    sleep 0.2; i=$((i + 1))
+  done
+  wait "$helper_pid" 2>/dev/null || true
+  rm -f "$FAKEBIN/herdr"
+  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  endpoint=$(jq -r .helperEndpoint "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true)
+  assert_equals "failed" "$stage" "helper must complete its transaction after the lock frees"
+  assert_equals "occupant-changed" "$reason" "dead reserved pid must fail on the occupant proof"
+  assert_equals "herdr:sess:helper:p1:workspace" "$endpoint" \
+    "helper writes must preserve the endpoint another writer recorded"
+  assert_grep 'pane close helper:p1' "$calls" \
+    "terminal cleanup must still close the recorded helper pane"
+  pass "outcome writers serialize under the resource lock and keep the endpoint"
+}
+
+# Round-3 regression: terminal outcomes are final for staging - a late
+# nonterminal writer must not resurrect waiting-idle over a concrete failure.
+test_terminal_outcome_stage_not_resurrected() {
+  local home incident helper_pid i stage reason
+  home=$(make_main_home terminal-final)
+  incident=tfin-1
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+  jq -nc '{version:1, harness:"codex", pid:999999006, sessionId:"tfin", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  jq -nc --arg id "$incident" --argjson spid 999999006 --arg ssid "tfin" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", destinationHarness:"codex"}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"failed", reason:"occupant-changed", updatedAt:1}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  printf 'busy\n' > "$home/busy"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="sess:p0" FM_SUPERVISOR_BACKEND=herdr \
+    FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=30 \
+    "$PR" helper "$incident" >/dev/null 2>&1 &
+  helper_pid=$!
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -f "$home/state/primary-resource/helper-ready/$incident" ]; do
+    sleep 0.1; i=$((i + 1))
+  done
+  sleep 2
+  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  kill "$helper_pid" 2>/dev/null || true
+  wait "$helper_pid" 2>/dev/null || true
+  assert_equals "failed" "$stage" "nonterminal write must not resurrect a terminal outcome"
+  assert_equals "occupant-changed" "$reason" "terminal failure reason must survive a late writer"
+  pass "terminal outcome stage is final for late nonterminal writers"
+}
+
 test_incident_path_rejected_before_state_write() {
   local home lock_hash err rc=0 incident=valid-incident
   home=$(make_main_home incident-path)
@@ -940,17 +1059,51 @@ test_reconcile_same_second_successor() {
   jq -nc --arg id "$incident" \
     '{version:1, incidentId:$id, stage:"started", reason:"successor-alive", updatedAt:1}' \
     > "$home/state/primary-resource/outcomes/$incident.json"
-  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=100 \
+  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_STARTED_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=100 \
     FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" FM_SUPERVISOR_BACKEND=tmux \
     run_pr "$home" check 2>&1 || true)
   case "$out" in *'successor never became'*) fail "changed generation in the same second must not alert" ;; esac
 
   bind_home "$home" claude source "$home/tx.jsonl"
-  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=100 \
+  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_STARTED_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=100 \
     FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" FM_SUPERVISOR_BACKEND=tmux \
     run_pr "$home" check 2>&1 || true)
   assert_contains "$out" "successor never became" "unchanged generation must remain stranded"
   pass "same-second successor binding reconciles by generation"
+}
+
+# The successor's first turn routinely runs minutes past the helper's started
+# write before its turn end advances the binding generation: that slow-but-
+# healthy turn must stay silent, while a genuinely stalled successor still
+# alerts exactly once once the stage-specific bound elapses.
+test_stalled_successor_alert_bound() {
+  local home out incident q
+  home=$(make_main_home stalled-bound)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude source "$home/tx.jsonl"
+  incident=stalled-bound-1
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/outcomes"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, action:"context", generation:"source", reservedAt:100}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"started", reason:"successor-alive", updatedAt:1}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_NOW=601 FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  case "$out" in
+    *'successor never became'*) fail "ten minutes past started must not alarm a slow first successor turn" ;;
+  esac
+  assert_absent "$home/state/primary-resource/alerts/source--stalled-successor-$incident" \
+    "slow first successor turn must not record a stalled alert"
+  out=$(FM_PRIMARY_RESOURCE_NOW=1802 FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "successor never became" "genuinely stalled successor must alert once past the bound"
+  out=$(FM_PRIMARY_RESOURCE_NOW=1803 FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "stalled-successor alert exactly once"
+  pass "stalled-successor bound tolerates slow first turns, alerts real stalls once"
 }
 
 test_commit_endpoint_on_outcome_not_receipt() {
@@ -1040,6 +1193,39 @@ test_quota_episode_blocks_second_window() {
   pass "quota episode blocks second window terminal attempt"
 }
 
+# Round-3 regression: the episode sweep evaluates every provider marker against
+# the one fresh all-provider reading, so a provider a quota handover switched
+# away from still clears once it reads reliably below threshold again.
+test_episode_cleared_for_nonprimary_provider() {
+  local home q out
+  home=$(make_main_home episode-sweep)
+  write_codex_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" codex sess-sweep "$home/tx.jsonl"
+  mkdir -p "$home/state/primary-resource/episodes"
+  q=$(quota_json codex 50 claude 50)
+  printf 'incidentId=old\nopenedAt=1\n' > "$home/state/primary-resource/episodes/claude"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "below-threshold reading must stay silent"
+  assert_absent "$home/state/primary-resource/episodes/claude" \
+    "non-primary provider reading below threshold must clear its episode marker"
+
+  printf 'incidentId=old\nopenedAt=1\n' > "$home/state/primary-resource/episodes/claude"
+  q=$(quota_json codex 50 claude 3)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_present "$home/state/primary-resource/episodes/claude" \
+    "exhausted non-primary provider must keep its episode marker"
+
+  printf 'incidentId=old\nopenedAt=1\n' > "$home/state/primary-resource/episodes/claude"
+  q=$(quota_json codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_present "$home/state/primary-resource/episodes/claude" \
+    "provider missing from the reading must keep its episode marker"
+  pass "episode markers for non-primary providers clear from one all-provider reading"
+}
+
 test_ambiguous_resets_at_is_alert_only() {
   local home q out
   home=$(make_main_home ambreset)
@@ -1058,6 +1244,41 @@ test_ambiguous_resets_at_is_alert_only() {
     *'primary-resource quota'*) fail "ambiguous resetsAt must not propose quota handover" ;;
   esac
   pass "missing resetsAt is alert-only"
+}
+
+# Round-3 regression: an applicable SOURCE window whose percentRemaining is
+# non-numeric or out of range must read unknown/ambiguous and alert, never as
+# below-threshold, and must not strip the active episode marker.
+test_malformed_source_window_is_alert_only() {
+  local value home q out
+  for value in '"3"' '150'; do
+    home=$(make_main_home "malformed-source-$value")
+    write_claude_transcript "$home/tx.jsonl" 1000
+    bind_home "$home" claude "sess-msrc-$value" "$home/tx.jsonl"
+    mkdir -p "$home/state/primary-resource/episodes"
+    printf 'incidentId=old\nopenedAt=1\n' > "$home/state/primary-resource/episodes/claude"
+    q=$(jq -nc --argjson pr "$value" --argjson ea '[{"scope":"account","status":"known","effectivePercentRemaining":50,"runway":{"status":"through_reset"}}]' '
+      {schemaVersion:5, providers:[
+        {provider:"claude", state:{status:"ok", stale:false},
+         quotaSemantics:{status:"known", effectiveAvailability:$ea},
+         windows:[{id:"five_hour", kind:"session", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:$pr}]},
+        {provider:"codex", state:{status:"ok", stale:false},
+         quotaSemantics:{status:"known", effectiveAvailability:$ea},
+         windows:[{id:"five_hour", kind:"session", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:50}]}
+      ]}')
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+      run_pr "$home" check 2>/dev/null || true)
+    assert_contains "$out" "malformed" "malformed source window ($value) must alert"
+    case "$out" in
+      *'primary-resource quota'*) fail "malformed source window ($value) must not read as below-threshold" ;;
+    esac
+    assert_present "$home/state/primary-resource/episodes/claude" \
+      "malformed reading ($value) must not clear the episode marker"
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+      run_pr "$home" check 2>/dev/null || true)
+    assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "malformed-window alert once ($value)"
+  done
+  pass "malformed source window alerts instead of reading not-exhausted"
 }
 
 test_same_provider_and_stale_destination() {
@@ -1493,15 +1714,20 @@ test_helper_no_pgrep_fallback_records_failure
 test_helper_occupant_changed_no_exit
 test_helper_exit_authority_is_receipt_not_binding
 test_outcome_write_failure_still_closes_helper_pane
+test_outcome_writers_serialize_under_resource_lock
+test_terminal_outcome_stage_not_resurrected
 test_incident_path_rejected_before_state_write
 test_reconcile_stranded_helper_alert
 test_reconcile_failed_outcome_alert
 test_quota_axi_bounded_and_fresh
 test_reconcile_same_second_successor
+test_stalled_successor_alert_bound
 test_commit_endpoint_on_outcome_not_receipt
 test_custom_route_gateway_refuses_quota_replacement
 test_quota_episode_blocks_second_window
+test_episode_cleared_for_nonprimary_provider
 test_ambiguous_resets_at_is_alert_only
+test_malformed_source_window_is_alert_only
 test_same_provider_and_stale_destination
 test_duplicate_incident_check_and_commit
 test_secondmate_noop
