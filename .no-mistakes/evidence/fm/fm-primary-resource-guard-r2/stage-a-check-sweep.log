@@ -1,0 +1,45 @@
+
+===== S1a context=174999 (below threshold) =====
+output: []
+RESULT: PASS - no proposal at 174999
+
+===== S1b context=175000 (at threshold, inclusive) =====
+primary-resource context 2f76b9a2f1fe771aebc2c5299ac84e89a2a0d155066d798f90e93f5ec0853f34
+proposal action=context incident=2f76b9a2f1fe771aebc2c5299ac84e89a2a0d155066d798f90e93f5ec0853f34 replacement={"eligible":false,"harness":"codex","provider":"codex","reason":"missing-row"}
+
+===== S2a quota used=96.99% (below) =====
+output: []
+RESULT: PASS - no proposal at 96.99%
+
+===== S2b quota used=97% five-hour window (at threshold) =====
+primary-resource quota 76c975163e4c5552bbd71f248d1ec27f62f695dfb70ba6faf5561d147ed38a87
+proposal action=quota replacement={"eligible":true,"harness":"codex","provider":"codex","reason":""}
+
+===== S3 both triggers (context 200000 AND quota 97%) =====
+primary-resource quota c243ca0d94745e6ff94db21dc40daea93ce200cf11ed512c8b367740e336d78b
+RESULT: PASS - quota wins
+proposal action=quota
+
+===== S4a missing transcript (context unavailable) =====
+primary-resource alert: missing-binding; session kept
+RESULT: PASS - alert only, no proposal/receipt, session never closed
+
+===== S4b second check is silent (alert once) =====
+second output: []
+
+===== S4c recheck same home S1b at 175000 still proposes once =====
+
+===== S6 secondmate home: observe+arm+check are no-ops =====
+observe: [observe rc=0]
+check:   [check rc=0]
+RESULT: PASS - no binding/proposal/alert in secondmate home
+
+===== S8a herdr backend primary at context threshold proposes handover (no alert-only narrowing) =====
+primary-resource context 4bcb2f6962ad6627913bfadf90de8afe1807bd02a502565a5eadddade6b76748
+RESULT: PASS - herdr primary proposes handover
+
+===== SX terminal failed helper outcome -> exactly one reconcile alert, no retry =====
+first:  [primary-resource alert: handover failed (successor-not-alive) for failtest004743; session kept; no auto-retry]
+second: []
+RESULT: PASS - one alert emitted (1 alert file(s), receipt preserved), second check silent
+STAGE A COMPLETE

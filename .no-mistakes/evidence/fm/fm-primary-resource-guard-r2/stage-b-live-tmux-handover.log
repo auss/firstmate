@@ -1,0 +1,48 @@
+
+===== B1 start isolated tmux server + supervisor pane with a codex-classified agent =====
+pane=%0 shell_pid=2590855 agent_pid=2590872 comm=codex
+
+===== B2 observe binds the session (turnend payload shape) =====
+{"harness":"codex","pid":2590872,"sessionId":"sess-live"}
+
+===== B3 arm (check registration) =====
+registered: state/primary-resource.check.sh
+arm rc=0
+
+===== B4 check at 200K context proposes the context handover =====
+check output: primary-resource context 3d862922237380f2b2584ea52515d96853e296577eeb9cd331969f807eb6306a
+incident=3d862922237380f2b2584ea52515d96853e296577eeb9cd331969f807eb6306a
+
+===== B5 stow receipt + commit (receipt is immutable; helper auto-launched) =====
+commit rc=0 output: 3d862922237380f2b2584ea52515d96853e296577eeb9cd331969f807eb6306a
+{"action":"context","sourcePid":2590872,"sourceSessionId":"sess-live","sourceHarness":"codex","destinationHarness":"codex","generation":"sess-live"}
+reserved launch cmd: /home/marcin/.no-mistakes/evidence/01M2BBJNBSW6PFQMFKN4D60JF2/tmp-stage-b/work/fakebin/codex --dangerously-bypass-approvals-and-sandbox This\ is\ a\ fresh\ main\ Firstmate\ session\ replacing\ the\ se
+
+===== B6 wait for the helper to finish exit->shell->successor =====
+outcome: {"version":1,"incidentId":"3d862922237380f2b2584ea52515d96853e296577eeb9cd331969f807eb6306a","stage":"started","reason":"successor-alive","updatedAt":1789240678,"helperEndpoint":"tmux:fm-pr-helper-423915861-2594012-27315-1789240673"}
+RESULT: PASS - helper reached started/successor-alive
+successor marker present (fresh session launched)
+
+===== B7 launch argv/cmd files deleted after the terminal outcome =====
+RESULT: PASS - launch dir empty
+
+===== B8 pane transcript after handover (real tmux capture) =====
+
+
+
+
+
+
+
+===== B9 one automatic action per incident: re-check suppressed, re-commit refused =====
+re-check output: []
+RESULT: PASS - receipt suppresses re-proposal
+re-commit rc=1 output: fm-primary-resource: receipt already exists for 3d862922237380f2b2584ea52515d96853e296577eeb9cd331969f807eb6306a
+RESULT: PASS - duplicate commit refused
+immutable receipt still present
+
+===== B10 old session pid gone; successor classified as the live agent =====
+old agent pid 2590872 exited (pass)
+successor pid=2595553 comm=sleep cmdline=codex 3600 
+
+STAGE B COMPLETE

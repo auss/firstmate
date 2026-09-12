@@ -1,0 +1,47 @@
+
+===== C1 provision guarded herdr lab session fm-lab-pr-live-2672770 =====
+herdr client ok
+
+===== C2 create the primary pane (task tab) in the lab session =====
+container=fm-lab-pr-live-2672770:w1 seeded_tab=w1:t1
+target=fm-lab-pr-live-2672770:w1:p2 tab=w1:t2
+
+===== C3 start the codex-classified source agent (registers native agent state) =====
+source agent pid=2677962 comm=codex
+pane process state=agent (expect agent)
+busy state=idle (expect idle)
+
+===== C4 observe binds; check proposes the context handover on the herdr backend =====
+{"harness":"codex","pid":2677962,"sessionId":"sess-herdr"}
+check: primary-resource context 88c37d8831874ce171d2b80a82439011938751a85fe082ceaad0e23f67c5afb9
+
+===== C5 commit: immutable receipt + helper launched in its own non-focused workspace pane =====
+commit rc=0 out=88c37d8831874ce171d2b80a82439011938751a85fe082ceaad0e23f67c5afb9
+{"action":"context","sourcePid":2677962,"sourceSessionId":"sess-herdr","sourceHarness":"codex","destinationHarness":"codex"}
+helper endpoint recorded: herdr:fm-lab-pr-live-2672770:w2:p1:w2
+
+===== C6 wait for helper: occupant proof -> /quit -> shell -> successor -> started =====
+outcome: {"version":1,"incidentId":"88c37d8831874ce171d2b80a82439011938751a85fe082ceaad0e23f67c5afb9","stage":"started","reason":"successor-alive","updatedAt":1789241066,"helperEndpoint":"herdr:fm-lab-pr-live-2672770:w2:p1:w2"}
+RESULT: PASS - helper reached started/successor-alive on real herdr
+successor launched in the primary pane
+agent-lines seen by the source agent: /quit
+
+===== C7 launch argv/cmd files deleted after the terminal outcome (round-2 fix) =====
+RESULT: PASS - launch dir empty
+
+===== C8 the helper's own pane (exact recorded pane) was closed =====
+helper pane presence: dead (expect dead)
+RESULT: PASS - helper workspace pane closed
+
+===== C9 primary pane now runs the successor (codex-classified, registered agent) =====
+primary pane process state: agent (expect agent)
+primary pane agent state: alive (expect alive)
+old source agent pid exited (pass)
+
+
+===== C10 one automatic action per incident on herdr too =====
+re-check: []
+RESULT: PASS - receipt suppresses re-proposal
+re-commit rc=1: fm-primary-resource: receipt already exists for 88c37d8831874ce171d2b80a82439011938751a85fe082ceaad0e23f67c5afb9
+
+STAGE C COMPLETE
