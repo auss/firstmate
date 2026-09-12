@@ -1259,6 +1259,33 @@ test_postcompact_runs_compact_start() {
   pass "post-compact hook runs the compact session-start path"
 }
 
+test_postcompact_discarded_stdout_preserves_compact_channel_presentation() {
+  local root="$TMP_ROOT/postcompact-undelivered" out status=0
+  make_run_primary "$root"
+  run_hook "$root" --source startup </dev/null >/dev/null
+  printf 'note: captain ruled REST over RPC\n' > "$root/state/delivery-task.status"
+
+  env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" PATH="$RUN_PATH" \
+    "$POST_COMPACT" </dev/null >/dev/null 2>&1 || status=$?
+  expect_code 0 "$status" "post-compact start with discarded stdout"
+
+  status=0
+  out=$(run_hook "$root" --source compact </dev/null) || status=$?
+  expect_code 0 "$status" "compact channel after a discarded post-compact run"
+  assert_contains "$out" "UNREAD STATUS (new since last drain" \
+    "a discarded post-compact run consumed the one-shot status presentation the compact channel owes the model"
+  assert_contains "$out" "delivery-task note: captain ruled REST over RPC" \
+    "the compact channel did not surface the unread captain note"
+
+  status=0
+  out=$(run_hook "$root" --source compact </dev/null) || status=$?
+  expect_code 0 "$status" "second compact channel run"
+  assert_not_contains "$out" "UNREAD STATUS" \
+    "the delivered compact channel stopped committing its own presentation"
+  pass "post-compact hook: discarded output commits no presentation; the compact channel keeps full visibility"
+}
+
 test_run_reports_a_failed_session_start_as_digest_text() {
   local root="$TMP_ROOT/run-unwritable" out status=0
   make_run_primary "$root"
@@ -1300,6 +1327,7 @@ test_precompact_gate_stands_down_when_ineligible
 test_precompact_gate_unwritable_state_never_wedges
 test_precompact_gate_missing_trigger_defaults_to_performing
 test_postcompact_runs_compact_start
+test_postcompact_discarded_stdout_preserves_compact_channel_presentation
 test_pi_startup_classifies_cli_continuations
 test_pi_sessionstart_generation_prerequisite
 test_pi_reload_releases_sessionstart_exit_listener

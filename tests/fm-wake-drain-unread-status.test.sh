@@ -25,6 +25,35 @@ prime_cursor() {  # <state> <status-file>
     || fail "bootstrap drain failed while priming the unread cursor"
 }
 
+test_undelivered_presentation_commits_no_receipt() {
+  local dir state out status
+  dir=$(make_case undelivered-presentation)
+  state="$dir/state"
+  out="$dir/drain.out"
+  status="$state/task-undelivered.status"
+  prime_cursor "$state" "$status"
+
+  printf 'note: captain answer awaiting delivery\n' >> "$status"
+  append_wake "$state" signal task-undelivered.status "signal: task-undelivered.status" \
+    || fail "queueing the undelivered-path signal failed"
+
+  FM_WAKE_PRESENTATION_UNDELIVERED=1 FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2>/dev/null \
+    || fail "drain marked undelivered failed"
+  if grep -F 'UNREAD STATUS' "$out" >/dev/null; then
+    fail "an undelivered presentation printed one-shot sections nobody can see: $(cat "$out")"
+  fi
+  if grep -F 'wake annotation:' "$out" >/dev/null; then
+    fail "an undelivered presentation printed annotations nobody can see: $(cat "$out")"
+  fi
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "delivered drain failed after an undelivered one"
+  grep -F 'task-undelivered note: captain answer awaiting delivery' "$out" >/dev/null \
+    || fail "the undelivered drain consumed the unread-status presentation: $(cat "$out")"
+  grep -F 'latest wake-EVENT observed at drain, not current state: task-undelivered.status: note: captain answer awaiting delivery' "$out" >/dev/null \
+    || fail "the undelivered drain consumed the signal annotation presentation: $(cat "$out")"
+  pass "a drain marked undelivered presents nothing and commits no one-shot receipt"
+}
+
 test_incident_note_answer_buried_under_routine_note_surfaces_both() {
   local dir state out status
   dir=$(make_case incident-buried-note)
@@ -376,6 +405,7 @@ test_routine_working_and_covered_done_stay_silent_on_the_empty_queue() {
 
 test_incident_note_answer_buried_under_routine_note_surfaces_both
 test_already_presented_notes_are_not_replayed
+test_undelivered_presentation_commits_no_receipt
 test_brand_new_note_after_presentation_is_surfaced
 test_signal_annotation_surfaces_every_unread_note_not_only_the_newest
 test_pending_reply_resolution_surfaces_once
