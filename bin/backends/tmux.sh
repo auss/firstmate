@@ -300,7 +300,7 @@ EOF
   argv0s=$(fm_backend_tmux_foreground_argv0s "$target")
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    if [ "$(fm_agent_process_classify_name '' "$name")" = agent ]; then
+    if [ "$(fm_agent_process_classify '' "$name")" = agent ]; then
       printf 'alive'
       return 0
     fi

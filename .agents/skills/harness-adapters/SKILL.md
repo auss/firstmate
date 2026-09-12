@@ -3,7 +3,7 @@ name: harness-adapters
 description: >-
   Agent-only reference for firstmate harness operations.
   Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
-  Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, gemini, muse, rovo, and omp.
+  Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, gemini, muse, rovo, omp, and agy.
 user-invocable: false
 metadata:
   internal: true
@@ -35,7 +35,7 @@ For recovery and control, use the exact `harness=` in `state/<id>.meta`; never i
 Deliver lifecycle actions only through `../../../bin/fm-control.sh <task-id> interrupt|exit|relaunch`.
 Never type an interrupt key or exit command through `fm-send`, where routing-marked lifecycle text becomes chat.
 Trust handling is complete only when inspection proves the target started processing its instructions; delivery success alone is not proof.
-Muse and Gemini are verified only for crewmate and scout work, never a secondmate or primary.
+Muse, Gemini, rovo, and agy are verified only for crewmate and scout work, never a secondmate or primary.
 
 ## Detection
 
@@ -53,7 +53,7 @@ A new adapter's verified marker and command name must land in `../../../bin/fm-h
 Every emitted plan appends the selected or recorded harness reference after the named common references.
 The `harness-adapter-routing-v1` object is the machine-readable and human-visible selection contract: choose the operation, choose the scenario within it, then append the selected harness reference.
 `default` is the normal scenario when no narrower scenario applies.
-Kimi establishes its unsupported primary boundary in its selected harness reference; Muse and Gemini follow Non-negotiable safety above.
+Kimi establishes its unsupported primary boundary in its selected harness reference; Muse, Gemini, rovo, and agy follow Non-negotiable safety above.
 A new tool remains undispatchable until the `verify` plan, its harness entry, every named owner, and the live checks land.
 
 ```json harness-adapter-routing-v1
@@ -82,6 +82,7 @@ A new tool remains undispatchable until the `verify` plan, its harness entry, ev
     "verify": {"default": ["references/common/dispatch.md", "references/common/control-and-recovery.md", "references/common/primary-hooks.md", "references/common/model-and-effort.md"]}
   },
   "harnesses": {
+    "agy": "references/harness/agy.md",
     "claude": "references/harness/claude.md",
     "codex": "references/harness/codex.md",
     "opencode": "references/harness/opencode.md",
