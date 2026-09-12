@@ -544,6 +544,30 @@ EOF
   pass "arm preflights python3"
 }
 
+# The generated shim interpolates the home and script paths; both must arrive
+# shell-quoted so a home containing a space and a single quote still yields a
+# shim that parses and resolves FM_HOME to the exact original path.
+test_arm_shim_quotes_tricky_home_paths() {
+  local home shim out rc=0
+  home=$(make_main_home "arm home's fixture")
+  shim="$home/state/primary-resource.check.sh"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    PATH="$FAKEBIN:$PATH" "$home/bin/fm-primary-resource.sh" arm 2>&1) || rc=$?
+  expect_code 0 "$rc" "arm must succeed for a home path with a space and a quote"
+  assert_present "$shim" "arm must write the check shim"
+  # Run the shim with every override scrubbed so its own exported FM_HOME is
+  # the sole authority; its exec line and parsing are exercised for real.
+  rc=0
+  out=$(env -u FM_HOME -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u STATE \
+    "$shim" 2>&1) || rc=$?
+  expect_code 0 "$rc" "the generated shim must parse and run for tricky paths"
+  assert_contains "$out" "primary-resource alert" \
+    "the shim must exec the resource check despite tricky paths"
+  assert_present "$home/state/primary-resource/alerts/unbound--context-unavailable" \
+    "shim must resolve FM_HOME to the exact original tricky path"
+  pass "arm shim stays correct for home paths with spaces and quotes"
+}
+
 test_helper_busy_then_idle_fake_backend() {
   local home busyf incident reason
   home=$(make_main_home busy-idle)
@@ -1709,6 +1733,7 @@ test_commit_revalidation_rejects_invalid_quota_json
 test_stow_attestation_rejects_negative_prose
 test_argv_admission_via_commit_rejects_wrappers
 test_arm_requires_python3
+test_arm_shim_quotes_tricky_home_paths
 test_helper_busy_then_idle_fake_backend
 test_helper_no_pgrep_fallback_records_failure
 test_helper_occupant_changed_no_exit
