@@ -278,7 +278,7 @@ family_for_basename() {
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
-    fm-agy-harness.test.sh|fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-rovo-harness.test.sh|fm-omp-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
+    fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-rovo-harness.test.sh|fm-agy-harness.test.sh|fm-omp-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
     fm-harness-adapter-references.test.sh|\
@@ -296,7 +296,6 @@ family_for_basename() {
     fm-wake-drain-unread-status.test.sh|\
     fm-tool-update-check.test.sh|\
     fm-mail.test.sh|fm-mail-check.test.sh|\
-    fm-primary-resource.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-recovery-loop.test.sh|\
     fm-watch-triage.test.sh|fm-task-inbox.test.sh|\
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
@@ -342,13 +341,12 @@ family_for_basename() {
     fm-cursor-primary-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-adapter-instructions-live-e2e.test.sh|\
     fm-harness-liveness-drift-live-e2e.test.sh|\
-    fm-agy-signals-live-e2e.test.sh|fm-muse-signals-live-e2e.test.sh|fm-rovo-signals-live-e2e.test.sh|\
+    fm-muse-signals-live-e2e.test.sh|fm-rovo-signals-live-e2e.test.sh|fm-agy-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-herdr-pi-stale-registration-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
     fm-pi-branch-responsiveness-live-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|fm-pi-codex-native.test.sh|fm-omp-primary-live-e2e.test.sh|\
-    fm-primary-resource-herdr-lab-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
     fm-send-inbox-doorbell-live-e2e.test.sh|\
@@ -652,6 +650,8 @@ list_portable_serial() {
 # balance rather than coverage. That doc owns the refresh procedure.
 portable_serial_weight_hints() {
   cat <<'EOF'
+tests/fm-agy-harness.test.sh 11000
+tests/fm-agy-signals-live-e2e.test.sh 23
 tests/fm-afk-contract.test.sh 3000
 tests/fm-afk-inject-e2e.test.sh 35792
 tests/fm-afk-pi-herdr-return-e2e.test.sh 100
@@ -727,8 +727,6 @@ tests/fm-pi-primary-live-e2e.test.sh 20
 tests/fm-pi-watch-extension.test.sh 42970
 tests/fm-pi-windows-shell-invocation.test.sh 5121
 tests/fm-pr-check-security.test.sh 172215
-tests/fm-primary-resource-herdr-lab-e2e.test.sh 100
-tests/fm-primary-resource.test.sh 36781
 tests/fm-procevent-quota.test.sh 1949
 tests/fm-procevent-when.test.sh 17392
 tests/fm-procevent.test.sh 69715
@@ -1364,8 +1362,7 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       ;;
     bin/fm-watch*|bin/fm-wake*|bin/fm-inactive-reconcile.sh|\
-    bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh|\
-    bin/fm-primary-resource.sh)
+    bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
       printf '%s\n' watcher-wake-lock
       ;;
     bin/fm-afk*)

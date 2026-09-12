@@ -185,14 +185,10 @@ fm_composer_normalize_trim_var() {  # <varname>
 #     dark-foreground run. This assumes a DARK terminal theme, the firstmate
 #     fleet reality, where real typed input is bright and only de-emphasised UI
 #     is dark; the SGR-2 signal above stays theme-independent. A 256-colour
-#     foreground (38;5;n) is NOT luminance-tested - it is palette-dependent, so
-#     the default keeps it (real text wins: under-stripping merely defers,
-#     which the max-defer alarm surfaces, while over-stripping would inject
-#     over real input). The optional palette-index argument opts exactly one
-#     such foreground (38;5;<n>, semicolon and colon forms) in as an extra
-#     ghost class, ended by the same resets that end a dark-foreground run:
-#     agy's verdict passes 8 because agy de-emphasises its composer furniture
-#     (placeholder, hint, rules) in palette colour 8.
+#     foreground (38;5;n) is NOT luminance-tested - it is palette-dependent and
+#     no fleet harness uses it for ghost text, so it is kept (real text wins:
+#     under-stripping merely defers, which the max-defer alarm surfaces, while
+#     over-stripping would inject over real input).
 # Raising FM_COMPOSER_GHOST_LUMA_MAX is not free: muse draws its `⟩` prompt glyph
 # in truecolor 38;2;90;160;255, luminance ~149.9 (verified, muse 0.1.0-R708.1),
 # the tightest margin over the 128 default in the fleet. Above ~150 that glyph is
@@ -202,8 +198,8 @@ fm_composer_normalize_trim_var() {  # <varname>
 # codes are processed left to right within a sequence, so "ESC[0;2m" reads as dim.
 # LC_ALL=C makes awk walk bytes, so multibyte glyphs (e.g. ❯) and de-emphasised
 # runs alike pass through or drop intact without locale-dependent classes.
-fm_composer_strip_ghost() {  # [palette-index]
-  LC_ALL=C awk -v lumamax="${FM_COMPOSER_GHOST_LUMA_MAX:-128}" -v paln="${1:-}" '
+fm_composer_strip_ghost() {
+  LC_ALL=C awk -v lumamax="${FM_COMPOSER_GHOST_LUMA_MAX:-128}" '
     function sgr_code(v, b) {
       b = v
       sub(/:.*/, "", b)
@@ -235,16 +231,8 @@ fm_composer_strip_ghost() {  # [palette-index]
       r = a[p + 2] + 0; g = a[p + 3] + 0; b = a[p + 4] + 0
       return ((299*r + 587*g + 114*b) / 1000 < lumamax) ? 1 : 0
     }
-    # fg38_is_palette: 1 when the SGR 38 foreground starting at param p is the
-    # opted-in 38;5 palette colour (paln, semicolon or colon form); 0 otherwise.
-    function fg38_is_palette(a, p, k, want, spec) {
-      if (want == "") return 0
-      spec = a[p]
-      if (index(spec, ":") > 0) return (spec == "38:5:" want) ? 1 : 0
-      return (p + 2 <= k && a[p + 1] == "5" && a[p + 2] == want) ? 1 : 0
-    }
     {
-      line = $0; out = ""; dim = 0; darkfg = 0; pal8 = 0; n = length(line); i = 1
+      line = $0; out = ""; dim = 0; darkfg = 0; n = length(line); i = 1
       while (i <= n) {
         c = substr(line, i, 1)
         if (c == "\033") {            # ESC: consume a CSI ... final-byte sequence
@@ -263,23 +251,22 @@ fm_composer_strip_ghost() {  # [palette-index]
                 v = a[p]; code = sgr_code(v)
                 if (code == "38") {
                   darkfg = fg38_is_dark(a, p, k, lumamax)
-                  pal8 = fg38_is_palette(a, p, k, paln)
                   p = skip_color_payload(a, p, k)
                 } else if (code == "48" || code == "58") {
                   p = skip_color_payload(a, p, k)
                 } else if (code == "2") dim = 1
-                else if (code == "0") { dim = 0; darkfg = 0; pal8 = 0 }
+                else if (code == "0") { dim = 0; darkfg = 0 }
                 else if (code == "22") dim = 0
-                else if (code == "39") { darkfg = 0; pal8 = 0 }
-                else if (code + 0 >= 30 && code + 0 <= 37) { darkfg = 0; pal8 = 0 }
-                else if (code + 0 >= 90 && code + 0 <= 97) { darkfg = 0; pal8 = 0 }
+                else if (code == "39") darkfg = 0
+                else if (code + 0 >= 30 && code + 0 <= 37) darkfg = 0
+                else if (code + 0 >= 90 && code + 0 <= 97) darkfg = 0
               }
             }
             if (j <= n) { i = j + 1; continue }
           }
           i = i + 1; continue          # lone/other ESC: drop the ESC byte only
         }
-        if (dim == 0 && darkfg == 0 && pal8 == 0) out = out c   # keep only non-de-emphasised bytes
+        if (dim == 0 && darkfg == 0) out = out c   # keep only non-de-emphasised bytes
         i++
       }
       print out
@@ -303,7 +290,7 @@ fm_composer_strip_ghost() {  # [palette-index]
 # Matching a footer to confirm a keystroke landed is a different question from
 # asking what a worker is doing, and the two must not be conflated.
 # Delivery-only rendered busy footers per harness. claude/codex: "esc to
-# interrupt"; opencode: "esc interrupt"; pi: "Working..."; omp: "Working…"; grok: "Ctrl+c:cancel".
+# interrupt"; opencode: "esc interrupt"; pi: "Working..."; omp: "Working…"; grok: "Ctrl+c:cancel"; agy: "esc to cancel".
 # Claude's current spinner has a rotating glyph and word, but every active-turn
 # line has an ellipsis followed by a parenthesized elapsed duration. Keep this
 # signature separate from the shared default because that shape is not generic
@@ -324,7 +311,11 @@ fm_composer_strip_ghost() {  # [palette-index]
 # part of that union for the same reason the others are: without it a cursor
 # submit could never be acknowledged, because cursor parks its terminal cursor
 # outside its composer and the composer verdict is therefore always `unknown`.
-FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working(\.\.\.|…)|Ctrl\+c:cancel|ctrl\+c to stop'
+# agy's `esc to cancel` is part of the union for the same reason: an explicit
+# tmux agy endpoint reaches the submit core with no recorded harness, and its
+# bare `>` composer verdict is `unknown`, so the busy footer is the only
+# turn-started acknowledgement that path can read.
+FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working(\.\.\.|…)|Ctrl\+c:cancel|ctrl\+c to stop|esc[[:space:]]+to[[:space:]]+cancel'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
@@ -355,6 +346,14 @@ FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT='Ctrl\+c:cancel'
 # injection. Cursor's recorded worker state comes from its transcript fold in
 # bin/fm-busy-lib.sh, never from this row.
 FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
+# agy (Antigravity CLI) renders a pinned status row while a turn runs: the
+# `esc to cancel` token on the left and the model cell on the right (verified
+# live, agy 1.2.0; the idle row shows `? for shortcuts` instead). The
+# `Generating...` spinner word beside it is a free-floating output line and is
+# deliberately not matched, so echoed worker output cannot fake an
+# acknowledgement. Delivery guard only; recorded worker state comes from the
+# agy-regex fold in bin/fm-busy-lib.sh.
+FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT='esc[[:space:]]+to[[:space:]]+cancel'
 FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
 
 fm_busy_lines_match() {  # [harness]
@@ -370,6 +369,7 @@ fm_busy_lines_match() {  # [harness]
       pi|pi-signed) regex=$FM_DELIVERY_PI_BUSY_REGEX_DEFAULT ;;
       omp) regex=$FM_DELIVERY_OMP_BUSY_REGEX_DEFAULT ;;
       grok) regex=$FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT ;;
+      agy) regex=$FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT ;;
       kimi) regex=$FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT ;;
       cursor) regex=$FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT ;;
       '') regex=$FM_DELIVERY_BUSY_REGEX_DEFAULT ;;
@@ -1427,7 +1427,7 @@ _fm_composer_classify_bare_pi_overlap() {  # <screen> <styled> <has-identity> <i
     return 0
   fi
   agent=${identity%%$'\t'*}
-  if [ "$agent" = pi ] || [ "$agent" = agy ]; then
+  if [ "$agent" = pi ]; then
     _fm_composer_pi_verdict "$screen" "$styled" "$has_identity" "$identity"
   else
     _fm_composer_classify_bare_row "$screen" "$styled" "$row"
@@ -1459,10 +1459,6 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
   fi
   agent=${identity%%$'\t'*}
   agent_status=${identity#*$'\t'}
-  if [ "$agent" = agy ]; then
-    _fm_composer_agy_verdict "$screen" "$styled" "$agent_status"
-    return 0
-  fi
   if [ "$agent" != pi ] || [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ]; then
     printf 'unknown'
     return 0
@@ -1476,47 +1472,4 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
     idle|done) printf 'empty' ;;
     *) printf 'unknown' ;;
   esac
-}
-
-
-# agy uses a shell-like > inside solid rules. Require native identity, an
-# idle agent and the footer row directly below the close rule: 1.2.0 showed a
-# `? for shortcuts`/`accept-edits · <model> · <effort>` footer that changed
-# with typed input, while 1.2.1 replaced it with a constant status bar
-# (`user@host:pwd | ctx: <pct> ... · 7d: <pct> | <model>`) anchored on its
-# ` | ctx: ` meter; a trust or help dialog must never become an injection
-# target just because old rules remain on screen. Content is read through the
-# shared ghost strip with agy's palette-8 ghost class so the placeholder never
-# reads as typed input.
-_fm_composer_agy_verdict() {  # <screen> <styled> <agent-status>
-  local screen=$1 styled=$2 status=$3 row raw plain content pending=0
-  [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" = 1 ] || { printf 'unknown'; return; }
-  case "$status" in idle|done) ;; *) printf 'unknown'; return ;; esac
-  raw=$(_fm_composer_screen_row "$((FM_COMPOSER_SCAN_PI_CLOSE + 1))" "$screen")
-  plain=$(printf '%s' "$raw" | fm_composer_strip_ansi)
-  fm_composer_normalize_trim_var plain
-  case "$plain" in '? for shortcuts '*' · '*|'accept-edits · '*|*' | ctx: '*) ;; *) printf 'unknown'; return ;; esac
-  row=$((FM_COMPOSER_SCAN_PI_OPEN + 1))
-  while [ "$row" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; do
-    raw=$(_fm_composer_screen_row "$row" "$screen")
-    plain=$(printf '%s' "$raw" | fm_composer_strip_ansi)
-    fm_composer_normalize_trim_var plain
-    if [ "$styled" = 1 ]; then
-      content=$(printf '%s' "$raw" | fm_composer_strip_ghost 8 | fm_composer_strip_ansi)
-    else
-      content=$plain
-    fi
-    fm_composer_normalize_trim_var content
-    if [ "$row" -eq "$((FM_COMPOSER_SCAN_PI_OPEN + 1))" ]; then
-      case "$plain" in '>'*) ;; *) printf 'unknown'; return ;; esac
-      content=${content#>}
-      fm_composer_normalize_trim_var content
-    fi
-    [ -z "$content" ] || pending=1
-    row=$((row + 1))
-  done
-  if [ "$pending" = 0 ]; then printf 'empty'
-  elif [ "$styled" = 1 ]; then printf 'pending'
-  else printf 'unknown'
-  fi
 }
