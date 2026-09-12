@@ -1,0 +1,28 @@
+real agy pane pid=1801012 comm=agy -> tmux backend state=alive
+ok - real agy TUI classifies alive through the real tmux backend
+shared classifier: agy -> agent
+ok - shared process classifier classifies the real agy comm as agent
+ok - agy-containing decoy names stay non-agent in the shared classifier
+ok - fm-harness.sh: marker outranks inherited claude marker, invalid marker rejected, real ancestry detected
+agy-cli-manager real output:
+{
+  "account": "myszomik@gmail.com",
+  "bucket_count": 2,
+  "plan_type": null,
+  "project_id": "aicode-consumers",
+  "prompt_credits_available": null,
+  "prompt_credits_monthly": null,
+  "short_reset_at": "2026-09-12T22:57:06+00:00",
+  "short_usage_status": "known",
+  "short_usage_value": 89.62,
+  "source_home": "/home/marcin",
+  "weekly_reset_at": "2026-09-19T11:15:52+00:00",
+  "weekly_usage_status": "known",
+  "weekly_usage_value": 81.59
+}
+real agy effective percent remaining (min of short/weekly): 81.59
+chooser (claude, codex exhausted; real agy 81.59% remaining): agy default
+ok - quota fallback selects agy from the real agy-cli-manager quota when claude/codex are exhausted
+chooser (agy exhausted_now): pi default
+ok - exhausted agy quota yields to the later candidate
+ALL MANUAL LIVE DRIVES PASSED
