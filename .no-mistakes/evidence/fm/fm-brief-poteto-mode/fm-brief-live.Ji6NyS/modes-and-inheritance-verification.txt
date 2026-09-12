@@ -1,0 +1,4 @@
+direct-PR=Poteto mode
+local-only=Poteto mode
+scout=Poteto mode
+inherited-secondmate-home=Poteto mode
