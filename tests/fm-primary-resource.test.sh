@@ -458,7 +458,7 @@ test_stow_attestation_rejects_negative_prose() {
 }
 
 # Finding 5 + 10: argv admission through commit (not sed-extracted).
-test_argv_admission_via_commit_rejects_wrappers() {
+test_argv_admission_via_commit_rejects_interpreters() {
   local home q out incident gen rc=0 argv
   home=$(make_main_home argvadm)
   write_claude_transcript "$home/tx.jsonl" 200000
@@ -470,14 +470,6 @@ test_argv_admission_via_commit_rejects_wrappers() {
   gen=sess-argv
   write_stow_ok "$home/stow.md" "$incident" "$gen"
   argv="$home/argv"
-  printf 'env\0FOO=bar\0claude\0--verbose\0old prompt' > "$argv"
-  rc=0
-  err=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET="fixture:agent" \
-    FM_PRIMARY_RESOURCE_ARGV_FILE="$argv" \
-    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" 2>&1) || rc=$?
-  expect_code 1 "$rc" "env wrapper argv must be refused at commit"
-  assert_contains "$err" "unparseable launch argv" "wrapper refusal must be actionable"
-  assert_absent "$home/state/primary-resource/receipts/$incident.json"
   printf 'node\0/opt/claude/cli.js\0--verbose\0old prompt' > "$argv"
   rc=0
   FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET="fixture:agent" \
@@ -523,7 +515,49 @@ test_argv_admission_via_commit_rejects_wrappers() {
   assert_grep '--dangerously-bypass-approvals-and-sandbox' \
     "$home/$incident.cmd" \
     "Codex successor command must keep bypass flag (launch-time snapshot)"
-  pass "argv admission rejects unknown options and keeps spawned adapter flags"
+  pass "argv admission rejects interpreters and keeps spawned adapter flags"
+}
+
+test_ps_argv_fallback_and_portable_claim_recovery() {
+  local home q weekly_q out weekly_id
+  home=$(make_main_home ps-fallback)
+  write_claude_transcript "$home/tx.jsonl" 175000
+  bind_home "$home" claude sess-ps-fallback "$home/tx.jsonl"
+  cat > "$FAKEBIN/ps" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "env FOO='two words' claude --verbose old prompt"
+EOF
+  cat > "$FAKEBIN/find" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$FAKEBIN/ps" "$FAKEBIN/find"
+  q=$(quota_json claude 50)
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 FM_PRIMARY_RESOURCE_PROC_ROOT="$home/no-proc" \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_SUPERVISOR_TARGET="fixture:agent" PATH="$FAKEBIN:$PATH" "$PR" check 2>&1 || true)
+  assert_contains "$out" "primary-resource context" \
+    "ps argv fallback must resolve env-wrapped Claude options"
+
+  write_claude_transcript "$home/tx.jsonl" 1000
+  weekly_q=$(jq -nc --argjson ea '[{"scope":"account","status":"known","effectivePercentRemaining":50,"runway":{"status":"through_reset"}}]' '
+    {schemaVersion:5, providers:[
+      {provider:"claude", state:{status:"ok", stale:false}, quotaSemantics:{status:"known", effectiveAvailability:$ea},
+       windows:[{id:"five_hour",kind:"session",resetsAt:"2026-09-11T20:00:00Z",percentRemaining:50},{id:"seven_day",kind:"weekly",resetsAt:"2026-09-18T00:00:00Z",percentRemaining:3}]},
+      {provider:"codex", state:{status:"ok", stale:false}, quotaSemantics:{status:"known", effectiveAvailability:$ea},
+       windows:[{id:"five_hour",kind:"session",resetsAt:"2026-09-11T20:00:00Z",percentRemaining:50},{id:"weekly",kind:"weekly",resetsAt:"2026-09-18T00:00:00Z",percentRemaining:50}]}
+    ]}')
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$weekly_q" FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota" "setup must identify the weekly incident"
+  weekly_id=${out##* }; weekly_id=${weekly_id%%$'\n'*}
+  mkdir -p "$home/state/primary-resource/claims"
+  printf 'primary=crashed-before-episode\n' > "$home/state/primary-resource/claims/$weekly_id"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$weekly_q" FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" \
+    "portable claim recovery must suppress the already-claimed weekly handover"
+  rm -f "$FAKEBIN/ps" "$FAKEBIN/find"
+  pass "ps argv fallback and portable quota claim recovery"
 }
 
 test_arm_requires_python3() {
@@ -1518,9 +1552,8 @@ EOF
   incident=herdr-helper-success
   calls="$home/herdr-calls"
   state="$home/herdr-state"
-  agent="$home/codex"
-  cp "$(command -v sleep)" "$agent"
-  "$agent" 30 &
+  agent="codex"
+  sleep 30 &
   agent_pid=$!
   mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
     "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready" "$state"
@@ -1731,7 +1764,8 @@ test_check_lock_pid_mismatch_alert
 test_commit_revalidates_and_refuses_stale
 test_commit_revalidation_rejects_invalid_quota_json
 test_stow_attestation_rejects_negative_prose
-test_argv_admission_via_commit_rejects_wrappers
+test_argv_admission_via_commit_rejects_interpreters
+test_ps_argv_fallback_and_portable_claim_recovery
 test_arm_requires_python3
 test_arm_shim_quotes_tricky_home_paths
 test_helper_busy_then_idle_fake_backend
