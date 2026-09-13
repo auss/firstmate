@@ -1,0 +1,4 @@
+successor argv0: /tmp/agydrive.tsnc8j/fakebin/agy
+successor argc: 2
+successor arg1: --prompt-interactive
+successor arg2: This is a fresh main Firstmate session replacing the session recorded in receipt 0b27ff195bf66e2ad08e26404c129ce597afa63d602f47b493242a6007ac7472. Read AGENTS.md. Run bin/fm-session-start.sh exactly once unless its complete digest was already supplied. Verify lock ownership, read the stow receipt and outstanding work through their existing owners, then resume the emitted supervision protocol. Do not retry this incident; its immutable receipt consumes the automatic action. Do not resume the previous vendor conversation.

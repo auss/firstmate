@@ -1,0 +1,5 @@
+
+===== commit --stow-receipt (launches the real helper in a real tmux session) =====
+stdout: 9a060964b10d4bbb1c15a02cb1cd11c4cbdf963a12bf789ea336b4ffd20ee5ee
+[exit 0]
+PASS: commit succeeded

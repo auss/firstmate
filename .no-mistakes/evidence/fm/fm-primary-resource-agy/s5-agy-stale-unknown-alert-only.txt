@@ -1,0 +1,20 @@
+
+===== agy source row stale=true at 1% remaining (99% used) =====
+PASS: no quota proposal (primary-resource alert: agy-no-usage; session kept)
+PASS: stays alert-only
+PASS: no proposal stored
+
+===== agy source row quotaSemantics.status=unknown at 1% remaining =====
+PASS: no quota proposal (primary-resource alert: agy-no-usage; session kept)
+PASS: no proposal stored
+
+===== claude source exhausted, codex exhausted, agy destination stale -> no eligible replacement =====
+PASS: primary-resource alert: quota-no-eligible-replacement; session kept
+PASS: no proposal stored
+
+===== claude source exhausted, codex exhausted, agy destination quotaSemantics unknown -> same refusal =====
+PASS: primary-resource alert: quota-no-eligible-replacement; session kept
+PASS: no proposal stored
+
+===== control: same fixture but agy destination fresh -> quota handover IS proposed (proves the refusal above is the stale/unknown row, not the fixture) =====
+PASS: fresh agy destination eligible (primary-resource quota ddb7b6601fe2dd5c5ba667b664366b196bc657d6876332ed63375c0d1b2335c5)

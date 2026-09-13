@@ -1,0 +1,4 @@
+PASS: claude source with codex+agy eligible picks codex first
+proposal replacement: {"eligible":true,"harness":"codex","provider":"codex","reason":""}
+PASS: agy source with claude+codex eligible picks claude first
+proposal replacement: {"eligible":true,"harness":"claude","provider":"claude","reason":""}

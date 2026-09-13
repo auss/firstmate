@@ -1,0 +1,6 @@
+===== claude at 174999 tokens (launch argv seam: claude --print 'old prompt') =====
+stdout: 
+PASS: below threshold stays silent
+===== claude at 175000 tokens (launch argv seam: claude --print 'old prompt') =====
+stdout: primary-resource context 5b2ee7fc072e4e51b92aaa1c21e0d5bf53b91dbb3fa7f983ff616c6563e21d1d
+PASS: 175000-inclusive threshold proposes context handover

@@ -1,0 +1,16 @@
+
+===== check #1: bound agy primary, transcript.jsonl with 800000-byte content, quota healthy =====
+stdout: primary-resource alert: agy-no-usage; session kept
+[exit 0]
+PASS: alert mentions agy-no-usage, session kept
+PASS: no proposal stored
+state tree: ./alerts/sess-agy-big--context-unavailable ./binding.json 
+
+===== check #2: alert must not repeat within the same generation =====
+PASS: silent on second check (out=<>)
+
+===== transcript_full.jsonl as the bound transcript (intent names both files) =====
+PASS: transcript_full.jsonl also reads agy-no-usage (primary-resource alert: agy-no-usage; session kept)
+
+===== missing transcript -> missing-binding reason =====
+PASS: primary-resource alert: missing-binding; session kept

@@ -1,0 +1,24 @@
+bash-5.2$ /tmp/agydrive.tsnc8j/s3-live-claude-to-agy/agents/claude --noprofile -
+-norc -c echo\ \'claude\ agent\ \(source\ primary\)\ ready\'\;\ trap\ \'exit\ 0\
+'\ TERM\;\ while\ IFS=\ read\ -r\ line\;\ do\ case\ \"\$line\"\ in\ /quit\|/exit
+\)\ exit\ 0\ \;\;\ esac\;\ done\;\ while\ true\;\ do\ sleep\ 1\;\ done
+claude agent (source primary) ready
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

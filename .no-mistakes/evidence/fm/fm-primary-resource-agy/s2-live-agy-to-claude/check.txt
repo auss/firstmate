@@ -1,0 +1,4 @@
+
+===== check with production-shaped quota-axi JSON injected via FM_PRIMARY_RESOURCE_QUOTA_FILE =====
+stdout: primary-resource quota 9a060964b10d4bbb1c15a02cb1cd11c4cbdf963a12bf789ea336b4ffd20ee5ee
+PASS: quota handover proposed

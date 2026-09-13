@@ -1,0 +1,24 @@
+bash-5.2$ /tmp/agydrive.tsnc8j/s3-live-claude-to-agy/agents/claude --noprofile -
+-norc -c echo\ \'claude\ agent\ \(source\ primary\)\ ready\'\;\ trap\ \'exit\ 0\
+'\ TERM\;\ while\ IFS=\ read\ -r\ line\;\ do\ case\ \"\$line\"\ in\ /quit\|/exit
+\)\ exit\ 0\ \;\;\ esac\;\ done\;\ while\ true\;\ do\ sleep\ 1\;\ done
+claude agent (source primary) ready
+/exit
+bash-5.2$ /tmp/agydrive.tsnc8j/fakebin/agy --prompt-interactive This\ is\ a\ fre
+sh\ main\ Firstmate\ session\ replacing\ the\ session\ recorded\ in\ receipt\ 0b
+27ff195bf66e2ad08e26404c129ce597afa63d602f47b493242a6007ac7472.\ Read\ AGENTS.md
+.\ Run\ bin/fm-session-start.sh\ exactly\ once\ unless\ its\ complete\ digest\ w
+as\ already\ supplied.\ Verify\ lock\ ownership\,\ read\ the\ stow\ receipt\ and
+\ outstanding\ work\ through\ their\ existing\ owners\,\ then\ resume\ the\ emit
+ted\ supervision\ protocol.\ Do\ not\ retry\ this\ incident\;\ its\ immutable\ r
+eceipt\ consumes\ the\ automatic\ action.\ Do\ not\ resume\ the\ previous\ vendo
+r\ conversation.
+agy successor main session starting
+
+
+
+
+
+
+
+

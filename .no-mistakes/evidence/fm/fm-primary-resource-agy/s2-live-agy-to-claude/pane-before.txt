@@ -1,0 +1,24 @@
+bash-5.2$ /tmp/agydrive.tsnc8j/s2-live-agy-to-claude/agents/agy --noprofile --no
+rc -c echo\ \'agy\ agent\ \(source\ primary\)\ ready\'\;\ trap\ \'exit\ 0\'\ TER
+M\;\ while\ IFS=\ read\ -r\ line\;\ do\ case\ \"\$line\"\ in\ /quit\|/exit\)\ ex
+it\ 0\ \;\;\ esac\;\ done\;\ while\ true\;\ do\ sleep\ 1\;\ done
+agy agent (source primary) ready
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

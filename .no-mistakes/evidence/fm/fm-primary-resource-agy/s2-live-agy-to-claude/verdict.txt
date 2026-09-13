@@ -1,0 +1,30 @@
+
+===== outcome =====
+{"version":1,"incidentId":"9a060964b10d4bbb1c15a02cb1cd11c4cbdf963a12bf789ea336b4ffd20ee5ee","stage":"started","reason":"successor-alive","updatedAt":1789316933,"helperEndpoint":"tmux:fm-pr-helper-412512171-3717565-29672-1789316931"}
+
+
+===== receipt =====
+{
+  "version": 1,
+  "incidentId": "9a060964b10d4bbb1c15a02cb1cd11c4cbdf963a12bf789ea336b4ffd20ee5ee",
+  "action": "quota",
+  "sourcePid": 3717382,
+  "sourceSessionId": "sess-s2-live-agy-to-claude",
+  "sourceHarness": "agy",
+  "sourceProvider": "agy",
+  "destinationHarness": "claude",
+  "destinationProvider": "claude",
+  "generation": "sess-s2-live-agy-to-claude",
+  "stowReceiptPath": "/tmp/agydrive.tsnc8j/s2-live-agy-to-claude/stow.md",
+  "reservedAt": 1789316930,
+  "windowClaims": [
+    "9a060964b10d4bbb1c15a02cb1cd11c4cbdf963a12bf789ea336b4ffd20ee5ee",
+    "db690602a46868234fbcfc6bdd24bb34aa2b1cc5f0652d6927a77f0ded3eeeab"
+  ]
+}
+
+===== launch cmd =====
+/tmp/agydrive.tsnc8j/fakebin/claude This\ is\ a\ fresh\ main\ Firstmate\ session\ replacing\ the\ session\ recorded\ in\ receipt\ 9a060964b10d4bbb1c15a02cb1cd11c4cbdf963a12bf789ea336b4ffd20ee5ee.\ Read\ AGENTS.md.\ Run\ bin/fm-session-start.sh\ exactly\ once\ unless\ its\ complete\ digest\ was\ already\ supplied.\ Verify\ lock\ ownership\,\ read\ the\ stow\ receipt\ and\ outstanding\ work\ through\ their\ existing\ owners\,\ then\ resume\ the\ emitted\ supervision\ protocol.\ Do\ not\ retry\ this\ incident\;\ its\ immutable\ receipt\ consumes\ the\ automatic\ action.\ Do\ not\ resume\ the\ previous\ vendor\ conversation.
+
+===== old source agent pid 3717382 =====
+PASS: exited
