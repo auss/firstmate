@@ -87,6 +87,9 @@
 #     field is true, and mark those leading routine rows read. Stop before the
 #     first captain row because only Pi's sequence-keyed visible entry may
 #     acknowledge that row. Prints nothing when nothing replayable is unread.
+#     With FM_WAKE_PRESENTATION_UNDELIVERED=1 - a stdout the harness discards,
+#     contract owned by fm-wake-drain.sh's header - it prints nothing and
+#     advances nothing, so the delivered session-start channel keeps the replay.
 #     Run it only when the session holds the lock (fm-session-start.sh owns the
 #     call site).
 set -eu
@@ -615,6 +618,10 @@ case "$CMD" in
     ;;
   startup-replay)
     [ "$#" -eq 0 ] || usage
+    # Undelivered stdout: replay nothing and commit nothing (header contract).
+    case "${FM_WAKE_PRESENTATION_UNDELIVERED:-0}" in
+      1) exit 0 ;;
+    esac
     fm_lock_acquire_wait "$LOCK"
     UNREAD=$(print_unread)
     if [ -n "$UNREAD" ]; then

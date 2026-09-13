@@ -196,6 +196,31 @@ test_outcome_startup_replay_stops_at_captain_barrier() {
   pass "startup replay cannot advance the cursor across an unrendered captain outcome"
 }
 
+test_outcome_startup_replay_undelivered_commits_nothing() {
+  local home replay
+  home="$TMP_ROOT/store-undelivered-home"
+  mkdir -p "$home/state"
+
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-1 --verdict routine --summary 'worker recovered automatically' >/dev/null \
+    || fail "undelivered-path append failed"
+
+  replay=$(FM_WAKE_PRESENTATION_UNDELIVERED=1 FM_HOME="$home" \
+    "$ROOT/bin/fm-branch-outcome.sh" startup-replay) || fail "undelivered startup replay failed"
+  [ -z "$replay" ] || fail "an undelivered startup replay printed the one-shot section: $replay"
+  [ ! -e "$home/state/.branch-outcomes-cursor" ] \
+    || fail "an undelivered startup replay advanced the read cursor"
+  assert_contains "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread)" \
+    "worker recovered automatically" "an undelivered startup replay consumed the unread outcome"
+
+  replay=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" startup-replay) || fail "delivered startup replay failed"
+  assert_contains "$replay" "worker recovered automatically" \
+    "the delivered startup replay lost the outcome the undelivered run left unread"
+  [ -z "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread)" ] \
+    || fail "the delivered startup replay did not mark the row read"
+  pass "an undelivered startup replay presents nothing and commits no cursor advance"
+}
+
 test_outcome_cursor_corruption_fails_closed() {
   local home store snapshot out status
   home="$TMP_ROOT/store-corrupt-cursor-home"
@@ -841,6 +866,7 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_startup_replay_preserves_silence
 test_outcome_startup_replay_stops_at_captain_barrier
+test_outcome_startup_replay_undelivered_commits_nothing
 test_outcome_cursor_corruption_fails_closed
 test_cursor_advancement_refuses_ahead_processed_marker
 test_outcome_sequence_conflicts_fail_closed

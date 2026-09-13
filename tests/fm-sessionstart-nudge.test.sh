@@ -1286,6 +1286,29 @@ test_postcompact_discarded_stdout_preserves_compact_channel_presentation() {
   pass "post-compact hook: discarded output commits no presentation; the compact channel keeps full visibility"
 }
 
+test_postcompact_discarded_stdout_preserves_branch_outcome_replay() {
+  local root="$TMP_ROOT/postcompact-undelivered-outcomes" out status=0
+  make_run_primary "$root"
+  run_hook_pi "$root" --source startup </dev/null >/dev/null
+  FM_HOME="$root" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-1 --verdict routine --summary 'worker recovered automatically' >/dev/null \
+    || fail "branch outcome append failed"
+
+  env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS=pi \
+    FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" PATH="$RUN_PATH" \
+    "$POST_COMPACT" </dev/null >/dev/null 2>&1 || status=$?
+  expect_code 0 "$status" "post-compact start with discarded stdout on a pi primary"
+
+  status=0
+  out=$(run_hook_pi "$root" --source compact </dev/null) || status=$?
+  expect_code 0 "$status" "compact channel after a discarded post-compact run on a pi primary"
+  assert_contains "$out" "BRANCH OUTCOMES" \
+    "a discarded post-compact run consumed the branch-outcome replay the compact channel owes the model"
+  assert_contains "$out" "worker recovered automatically" \
+    "the compact channel did not surface the stored branch outcome"
+  pass "post-compact hook: discarded output commits no branch-outcome replay"
+}
+
 test_run_reports_a_failed_session_start_as_digest_text() {
   local root="$TMP_ROOT/run-unwritable" out status=0
   make_run_primary "$root"
@@ -1328,6 +1351,7 @@ test_precompact_gate_unwritable_state_never_wedges
 test_precompact_gate_missing_trigger_defaults_to_performing
 test_postcompact_runs_compact_start
 test_postcompact_discarded_stdout_preserves_compact_channel_presentation
+test_postcompact_discarded_stdout_preserves_branch_outcome_replay
 test_pi_startup_classifies_cli_continuations
 test_pi_sessionstart_generation_prerequisite
 test_pi_reload_releases_sessionstart_exit_listener
