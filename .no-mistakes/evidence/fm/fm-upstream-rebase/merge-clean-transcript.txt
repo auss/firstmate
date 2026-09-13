@@ -1,0 +1,18 @@
+# PR #7 merge cleanliness (rebase onto upstream/main)
+base (upstream main tip): 83c63cc6aa79d1cf913bb5ea988a75f867ffa322
+head (rebased branch):    421da3f6e7b15963ff654440162274d5e0143026
+
+$ git merge-base --is-ancestor $BASE $TGT   # branch sits on top of upstream base
+ok - base is an ancestor of head (branch rebased onto upstream main)
+
+$ git merge-tree --write-tree --messages $BASE $TGT   # real merge machinery, PR-merge simulation
+cb115b865db45e2b39ea4cd846913f1d22a4ec4b
+
+merge-tree exit: 0
+
+$ git rev-parse $TGT^{tree}
+cb115b865db45e2b39ea4cd846913f1d22a4ec4b
+(merged tree OID equals the branch tree OID: merge is clean, zero conflicts)
+
+$ git grep -c -E "^(<{7} |={7}$|>{7} )" HEAD   # no leftover conflict markers in tracked files
+ok - no conflict markers tracked at head (grep exit 1)

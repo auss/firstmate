@@ -1,0 +1,19 @@
+# Targeted behavior-suite results over conflict-resolved carried work (target commit 421da3f6e7b15963ff654440162274d5e0143026)
+
+$ bin/fm-test-run.sh tests/fm-quota-choose.test.sh tests/fm-agy-harness.test.sh tests/fm-bootstrap.test.sh tests/fm-control.test.sh tests/fm-test-run.test.sh tests/fm-send-agy-confirm.test.sh tests/fm-session-lock-ancestry.test.sh
+summary: total=7 failed=2 (both host-environment, see below) duration_ms=334553
+
+per-script exit codes:
+  tests/fm-quota-choose.test.sh        exit 0
+  tests/fm-bootstrap.test.sh           exit 0
+  tests/fm-control.test.sh             exit 0
+  tests/fm-send-agy-confirm.test.sh    exit 0
+  tests/fm-session-lock-ancestry.test.sh exit 0
+  tests/fm-test-run.test.sh            exit 1 -> host-env only: (a) en_US.UTF-8 collation breaks comm-based coverage guard (reproduces identically on upstream base 83c63cc); under LC_ALL=C all 36 runner-contract assertions pass; the single remaining failure is 'ruby is required to parse .github/workflows/ci.yml', also failing identically on the base; ruby is not installed on this host and system installs are out of scope.
+  tests/fm-agy-harness.test.sh         exit 1 -> host-env only: host resolves node from ~/.local/bin which also contains the real agy, so the missing-agy refusal case cannot remove agy from PATH; with the suite's documented FM_TEST_BASE_PATH override the full suite passes (30 ok, exit 0).
+
+re-drives:
+  FM_TEST_BASE_PATH=<node-only-dir> bash tests/fm-agy-harness.test.sh -> exit 0, 30 ok
+  LC_ALL=C bash tests/fm-test-run.test.sh -> 36 ok; only pre-existing missing-ruby case fails (fails on base too)
+  bash tests/fm-session-start.test.sh -> exit 0, 54 ok
+  bash tests/fm-backend-tmux-smoke.test.sh (REAL tmux server, private socket) -> exit 0, 7 ok

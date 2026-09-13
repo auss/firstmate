@@ -1,0 +1,9 @@
+$ bin/fm-quota-choose.sh --snapshot agy-healthy.json --candidate agy:default
+agy default
+exit=0
+$ bin/fm-quota-choose.sh --snapshot agy-exhausted.json --candidate agy:default --candidate pi:default
+pi default
+exit=0
+$ bin/fm-quota-choose.sh --snapshot agy-healthy.json --candidate bogus:default   (adversarial: unknown harness)
+error: unknown harness: bogus
+exit=2
