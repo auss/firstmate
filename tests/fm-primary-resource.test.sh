@@ -1991,8 +1991,8 @@ test_live_tmux_agy_quota_handover() {
   mkdir -p "$home/agents"
   cp "$(command -v bash)" "$fake_agent"
   chmod +x "$fake_agent"
-  # shellcheck disable=SC2016 # agent body is a literal -c string for the child shell
   local agent_body agent_cmd
+  # shellcheck disable=SC2016 # agent body is a literal -c string for the child shell
   agent_body='echo agy-agent-ready; trap "exit 0" TERM; while IFS= read -r line; do case "$line" in /quit|/exit) exit 0 ;; esac; done; while true; do sleep 1; done'
   agent_cmd=$(printf '%q --noprofile --norc -c %q' "$fake_agent" "$agent_body")
 
