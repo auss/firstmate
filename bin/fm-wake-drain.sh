@@ -10,6 +10,12 @@
 # retirement; docs/watcher-continuity.md owns the recovery contract.
 # FM_STATUS_PRESENTATION_LOCK_TIMEOUT sets the positive whole-second wait for
 # presentation-path locks (default 10); queue mutation locks remain blocking.
+# FM_WAKE_PRESENTATION_UNDELIVERED=1 declares that this drain's stdout never
+# reaches the model - the tracked PostCompact hook runs the compact-source
+# digest through a pipe the harness discards. The status presentation then
+# prints nothing and commits no one-shot receipt, so the next drain whose
+# stdout IS the delivery channel still presents every unread status,
+# annotation, and outcome backstop in full.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -580,6 +586,10 @@ print_status_sections() {
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
   local lock_rc holder_pid
+  # Undelivered stdout: present nothing and commit nothing (header contract).
+  case "${FM_WAKE_PRESENTATION_UNDELIVERED:-0}" in
+    1) return 0 ;;
+  esac
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else

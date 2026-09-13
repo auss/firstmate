@@ -123,6 +123,29 @@ make_lab() {  # <harness> -> echoes lab dir
   ln -sf "$ROOT/bin/fm-timeout-lib.sh" "$lab/bin/fm-timeout-lib.sh"
   ln -sf "$ROOT/bin/fm-wake-lib.sh" "$lab/bin/fm-wake-lib.sh"
   ln -sf "$ROOT/bin/fm-session-lock-lib.sh" "$lab/bin/fm-session-lock-lib.sh"
+  # The REAL pre-compact stow runner plus its three self-contained libraries, so
+  # the tracked PreCompact registration is exercised as shipped, not stubbed.
+  ln -sf "$ROOT/bin/fm-precompact-stow.sh" "$lab/bin/fm-precompact-stow.sh"
+  ln -sf "$ROOT/bin/fm-gate-refuse-lib.sh" "$lab/bin/fm-gate-refuse-lib.sh"
+  ln -sf "$ROOT/bin/fm-primary-scope-lib.sh" "$lab/bin/fm-primary-scope-lib.sh"
+  ln -sf "$ROOT/bin/fm-hook-host-lib.sh" "$lab/bin/fm-hook-host-lib.sh"
+  # The REAL post-compact starter plus the two libraries the stow runner's
+  # detached child sources, so the tracked PostCompact registration drives the
+  # recorder instead of exec-ing a missing script on any harness version that
+  # dispatches the event.
+  ln -sf "$ROOT/bin/fm-postcompact-start.sh" "$lab/bin/fm-postcompact-start.sh"
+  ln -sf "$ROOT/bin/fm-operational-input.sh" "$lab/bin/fm-operational-input.sh"
+  ln -sf "$ROOT/bin/fm-timeout-lib.sh" "$lab/bin/fm-timeout-lib.sh"
+  # A stub headless stow agent: the tracked PreCompact runner launches it
+  # detached with the marked prompt as its final argument, so this guard
+  # proves real dispatch and prompt delivery without spending a second model
+  # session per compaction.
+  cat > "$lab/bin/stub-stow-agent" <<'SH'
+#!/usr/bin/env bash
+printf 'stow pass: %s\n' "$*" >> "$(dirname "$0")/../stow-agent-calls"
+exit 0
+SH
+  chmod +x "$lab/bin/stub-stow-agent"
   cat > "$lab/bin/fm-bootstrap.sh" <<'SH'
 #!/usr/bin/env bash
 # Outlives the hook on purpose: the marker can only appear if the worker was
@@ -175,7 +198,6 @@ SH
       cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$lab/.pi/extensions/"
       cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" \
         "$ROOT/.pi/extensions/lib/fm-sessionstart-supervisor.mjs" "$lab/.pi/extensions/lib/"
-      cp "$ROOT/bin/fm-operational-input.sh" "$lab/bin/"
       printf '%s\n' '{"compaction":{"keepRecentTokens":200}}' > "$lab/.pi/settings.json"
       ;;
   esac
@@ -250,18 +272,38 @@ probe_context_reset() {  # <harness> <version> <lab> <clear-command> <launch-arg
   : > "$record"
   tmux -L "$SOCKET" new-session -d -s "$session" -c "$lab" -x 200 -y 50 \
     -e FM_LIVE_RECORD="$record" -e FM_ROOT_OVERRIDE="$lab" -e FM_HOME="$lab" \
-    -e FM_LIVE_NONCE="$LIVE_NONCE" \
+    -e FM_LIVE_NONCE="$LIVE_NONCE" -e FM_PRECOMPACT_STOW_AGENT="$lab/bin/stub-stow-agent" \
     "$*" \
     || fail "$harness $version: could not start an interactive lab session"
 
   # Every run-tier TUI asks whether it trusts a folder it has not seen, and the
-  # session-open hook only fires once that is answered. Each harness's default
-  # selection IS the trusting one, so a bare Enter clears it; the loop keeps
-  # waiting for the recorded open either way, so a harness that stops prompting
-  # costs nothing. harness-adapters owns trust handling outside tests.
+  # session-open hook only fires once that is answered. Claude 2.1.269 defaults
+  # that dialog to the UNTRUSTING option ("No, exit"), so a bare Enter would
+  # quit instead of trusting; the dialog is therefore answered by moving its
+  # cursor onto the option that names the trusting word (Yes/Trust) before
+  # Enter, in either list order. The loop keeps waiting for the recorded open
+  # either way, so a harness that stops prompting costs nothing.
+  # harness-adapters owns trust handling outside tests.
   n=0
   while [ "$n" -lt 60 ] && ! grep -q . "$record" 2>/dev/null; do
-    if capture "$session" | grep -qiE 'trust (this|the|parent)?[[:space:]]*(folder|project)'; then
+    pane_now=$(capture "$session")
+    if printf '%s\n' "$pane_now" | grep -qiE 'trust (this|the|parent)?[[:space:]]*(folder|project)'; then
+      # The trusting option is a short line naming "Yes"; the explanatory
+      # prose above the options is long, and only the options are selectable.
+      trust_line=$(printf '%s\n' "$pane_now" | awk 'length($0) <= 60 && /[Yy]es/ {print NR; exit}')
+      cursor_line=$(printf '%s\n' "$pane_now" | awk 'index($0, "❯") {print NR; exit}')
+      if [ -n "$trust_line" ] && [ -n "$cursor_line" ] \
+        && [ "$trust_line" != "$cursor_line" ] \
+        && [ $(( trust_line > cursor_line ? trust_line - cursor_line : cursor_line - trust_line )) -le 5 ]; then
+        while [ "$cursor_line" -lt "$trust_line" ]; do
+          tmux -L "$SOCKET" send-keys -t "$session" Down
+          cursor_line=$(( cursor_line + 1 ))
+        done
+        while [ "$cursor_line" -gt "$trust_line" ]; do
+          tmux -L "$SOCKET" send-keys -t "$session" Up
+          cursor_line=$(( cursor_line - 1 ))
+        done
+      fi
       tmux -L "$SOCKET" send-keys -t "$session" Enter
       sleep 5
     fi
@@ -306,6 +348,24 @@ probe_context_reset() {  # <harness> <version> <lab> <clear-command> <launch-arg
     done
   fi
   send_line "$session" /compact
+  # The tracked PreCompact registration performs stow itself: a harness that
+  # dispatches it must launch the detached stub agent with the marked prompt
+  # and still compact straight away - never block, never print an instruction.
+  # A harness with no PreCompact channel just compacts, exactly as before the
+  # runner existed.
+  n=0
+  while [ "$n" -lt 20 ] && ! grep -qx compact "$record" \
+    && ! [ -s "$lab/stow-agent-calls" ]; do
+    sleep 3
+    n=$((n + 1))
+  done
+  if [ -s "$lab/stow-agent-calls" ]; then
+    grep -q 'FIRSTMATE_OP' "$lab/stow-agent-calls" \
+      || { capture "$session" >&2; fail "$harness $version: the pre-compact runner launched its agent without the marked stow prompt"; }
+    pass "$harness $version: a manual /compact performs the detached stow pass without blocking"
+  else
+    note "$harness $version: no PreCompact dispatch observed around /compact, so its stow-pass evidence was not refreshed"
+  fi
   n=0
   while [ "$n" -lt 40 ] && ! grep -qx compact "$record"; do sleep 3; n=$((n + 1)); done
   if grep -qx compact "$record"; then
@@ -321,6 +381,49 @@ probe_context_reset() {  # <harness> <version> <lab> <clear-command> <launch-arg
   fi
 
   tmux -L "$SOCKET" kill-session -t "$session" >/dev/null 2>&1 || true
+}
+
+# --- (d) post-compaction reopen on the run tier --------------------------------
+#
+# Headless codex exec compaction: the /compact slash runs, and whatever this
+# codex version does around it, the next reopen must still fire the tracked
+# session-open channel - a compaction that silenced it would leave the
+# compacted session blind. The compact is issued twice so that, if the version
+# dispatches the tracked PreCompact runner, the second attempt proves the
+# first performed its stow pass and stepped aside: a runner that wedged
+# compaction would fail the 'Context compacted' assertion below.
+probe_compact_reopen() {  # <harness> <version> <lab> <resume-argv...>
+  local harness=$1 version=$2 lab=$3
+  shift 3
+  local record="$lab/record" out source compact_out
+  : > "$record"
+  ( cd "$lab" && FM_LIVE_RECORD="$record" FM_LIVE_NONCE="$LIVE_NONCE" FM_ROOT_OVERRIDE="$lab" FM_HOME="$lab" \
+    FM_PRECOMPACT_STOW_AGENT="$lab/bin/stub-stow-agent" \
+    "$@" '/compact' < /dev/null >/dev/null 2>&1 ) || true
+  [ -s "$lab/stow-agent-calls" ] \
+    && pass "$harness $version: the tracked PreCompact runner performed the stow pass on the exec compact path"
+  compact_out=$( cd "$lab" && FM_LIVE_RECORD="$record" FM_LIVE_NONCE="$LIVE_NONCE" FM_ROOT_OVERRIDE="$lab" FM_HOME="$lab" \
+    FM_PRECOMPACT_STOW_AGENT="$lab/bin/stub-stow-agent" \
+    "$@" '/compact' < /dev/null 2>&1 ) || true
+  printf '%s' "$compact_out" | grep -Eq 'Context compacted|Compacted\.' \
+    || fail "$harness $version: the second /compact did not report a completed compaction; refresh this guard against that harness version (output: $(printf '%s' "$compact_out" | tail -n 3 | tr '\n' ' '))"
+  out=$( cd "$lab" && FM_LIVE_RECORD="$record" FM_LIVE_NONCE="$LIVE_NONCE" FM_ROOT_OVERRIDE="$lab" FM_HOME="$lab" \
+    "$@" "$ASK" < /dev/null 2>&1 )
+  source=$(tail -n 1 "$record")
+  [ -n "$source" ] \
+    || { printf '# post-compact model reply: %s\n' "$out" >&2; fail "$harness $version: a post-compaction reopen fired no session-open hook, so a compacted session reopens blind"; }
+  # Source routing and its delivery semantics are owned by probe_process_opens:
+  # a digest-carrying source must also reach model context here, while a
+  # resume-classified reopen is deliberately delivered through the nudge path
+  # instead, because codex exec restores a compacted thread as a resume and
+  # injects no SessionStart stdout for it.
+  case "$source" in
+    startup|new|clear|compact)
+      printf '%s' "$out" | grep -Eq "FMHOOKTOKEN-$source-[0-9]+-$LIVE_NONCE" \
+        || { printf '# post-compact model reply: %s\n' "$out" >&2; fail "$harness $version: the post-compaction session-open output did not reach model context (source '$source')"; }
+      ;;
+  esac
+  pass "$harness $version: after a compaction the reopen still fires the session-open hook (source '$source')"
 }
 
 # --- real Pi provider prerequisite -------------------------------------------
@@ -608,7 +711,9 @@ for harness in claude codex pi; do
       probe_process_opens codex "$version" "$lab" resume \
         codex exec --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
         -- codex exec resume --last --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check
-      note "codex $version: codex exec run-tier evidence refreshed; the interactive TUI remains uncovered because tracked project hooks provide no session-open or re-emit channel there"
+      probe_compact_reopen codex "$version" "$lab" \
+        codex exec resume --last --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check
+      note "codex $version: codex exec run-tier and post-compaction evidence refreshed; the interactive TUI remains uncovered because tracked project hooks provide no session-open or re-emit channel there"
       ;;
     pi)
       probe_process_opens pi "$version" "$lab" resume \
