@@ -1,0 +1,12 @@
+CI host shape reproduced (PATH without treehouse/gh-axi/quota-axi/tasks-axi/no-mistakes;
+python3 stubbed to exit 127 like the fixture). Real product bin/fm-bootstrap.sh output:
+line 1  MISSING: treehouse (...)          <- unrelated leading line, the CI trigger
+line 10 PRIMARY_RESOURCE: not armed - arm failed (python3/check-register/state path)...
+exit code 0 (non-fatal). Full output: bootstrap-output-ci-shape.txt
+
+Targeted test_bootstrap_arm_failure_diagnostic runs:
+pre-fix  (b916cab): not ok - emitted line must not be MISSING: (got: MISSING: treehouse ...)  -> exit 1
+post-fix (9529d1a): ok - bootstrap arm failure diagnostic                                     -> exit 0
+
+test_outcome_writers_serialize_under_resource_lock:
+pre-fix  (b916cab) and post-fix (9529d1a): both ok (restructure is behavior-preserving)

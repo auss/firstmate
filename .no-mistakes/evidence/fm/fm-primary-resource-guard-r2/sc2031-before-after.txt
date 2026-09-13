@@ -1,0 +1,15 @@
+CI lint posture = shellcheck 0.11.0 --norc --external-sources (full dataflow), as bin/fm-lint.sh runs in CI.
+
+Pre-fix  (b916cab version of tests/fm-primary-resource.test.sh):
+  SC2031 note count: 17  (exit 1)  - matches the CI lint failure in the intent
+Post-fix (9529d1a, checked-out worktree):
+  SC2031 note count: 0; shellcheck exit 0 (zero findings of any code)
+  bin/fm-lint.sh tests/fm-primary-resource.test.sh bin/fm-test-run.sh -> exit 0
+  ("full ShellCheck extended analysis enabled", pinned 0.11.0)
+
+No blanket file-level disable and no SC2031-specific disable directive added:
+the only disable in the file is a pre-existing SC2016 on an unrelated heredoc.
+Restructure: the lock holder now runs as a separate script receiving
+<repo-root> <lock> <ready> as positional parameters, driving the real
+fm-wake-lib.sh lock protocol in its own process; values are no longer read
+across the subshell boundary.

@@ -1,0 +1,10 @@
+Invocation: FM_PRIMARY_RESOURCE_HERDR_LAB_E2E=1 bash tests/fm-primary-resource-herdr-lab-e2e.test.sh
+Host: herdr 0.9.0 present; gate policy opt-in via fm_live_gate (tests/lib.sh).
+Output:
+ok - live Herdr lab handover: check->commit->helper->successor, default untouched
+exit=0
+
+Default-session safety (independent 'herdr session list' before vs after):
+identical - default session still 'running', no fm-pr-resource-* lab leaked.
+(The two stopped fm-lab-fmpralert/fmtlive entries predate this phase and are
+unchanged by it; this run's lab is fully torn down.)
