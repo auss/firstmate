@@ -40,7 +40,7 @@ The unauthenticated failure mode was not observed, so treat any auth prompt or r
 
 Detected by ancestry alone: `../../../../../bin/fm-harness.sh` matches the anchored process name `agy`, never `*agy*`.
 No environment marker is promoted: `AGENT=1` observed on a live TUI is an inherited launcher value, not an agy identity, and agy does not clear an inherited `CLAUDECODE` - but a structural agy ancestor now outranks that retained marker, which `../../../../../bin/fm-harness.sh` decides without depending on the spawn's own launch-boundary marker clearing.
-agy is deliberately absent from the session-lock name vocabulary in `../../../../../bin/fm-session-lock-lib.sh`, where muse, gemini, and rovo are also absent: a crewmate-only adapter must never own a home session lock.
+agy is anchored in the session-lock name vocabulary in `../../../../../bin/fm-session-lock-lib.sh` exactly like pi and omp (`^agy$`, never `*agy*`), so a session whose ancestry runs through agy is recognized when the fleet lock is acquired, inspected, or proven held by that session; muse, gemini, and rovo stay absent from that vocabulary.
 
 ## Worker busy state and turn end
 
