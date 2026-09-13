@@ -15,8 +15,10 @@
 #   context: 175000 input-context tokens (Claude usage sum or Codex input_tokens)
 #   quota:   97 percent used (100 - percentRemaining) on a session, five-hour,
 #            or weekly window of the primary's provider
-# When both triggers apply, quota wins. Only Claude and Codex have verified
-# reliable context adapters; every other adapter is alert-only and never closes
+# When both triggers apply, quota wins. Only Claude and Codex have context
+# adapters, verified at parser level against recorded transcript shapes
+# (docs/verification/runtime-backends.md "Primary-resource handover" owns the
+# verification grades); every other adapter is alert-only and never closes
 # the session. One automatic action per incident:
 # a receipt created no-clobber before any terminal action; check never
 # re-proposes an incident that already has a receipt; commit refuses one; failed

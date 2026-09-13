@@ -1822,3 +1822,47 @@ Two composer facts from that run are load-bearing for the shipped classifier:
 
 `tests/fm-agy-harness.test.sh` pins both shapes plus the identity, container, and footer refusals portably in both the pair path and the bare-row-inside-pair overlap path.
 Busy state stays `unknown agy-unverified` (`bin/fm-busy-lib.sh`) because no semantic source is verified; the rendered `esc to cancel` footer outlives an interrupted turn and is deliberately not trusted.
+
+## Primary-resource handover
+
+`bin/fm-primary-resource.sh`'s header owns the main-session resource-protection contract: thresholds, incident identity, the immutable receipt, and the helper lifecycle.
+This section owns only the verification grades behind that guarantee, established on 2026-09-13 on Linux (Herdr 0.9.0 for the Herdr path), and each fact below states the grade it was actually established at.
+Live means a real backend drove the real scripts end to end; transcript-fixture means a parser-level regression over a recorded vendor transcript shape, and neither grade implies the other.
+
+### Live backend handover paths
+
+The Herdr handover path was verified live through the real `bin/fm-herdr-lab.sh` under a guarded `fm-lab-*` session, with every lifecycle call routed through the helper's `run` and the teardown trap installed before provisioning.
+`fm_live_gate` from `tests/lib.sh` is the single owner of the run/skip decision for this live-harness-optin guard, and this command refreshes the record:
+
+```sh
+FM_PRIMARY_RESOURCE_HERDR_LAB_E2E=1 bin/fm-test-run.sh tests/fm-primary-resource-herdr-lab-e2e.test.sh
+```
+
+Executed twice on 2026-09-13, both runs green with `gate_skip=false`:
+
+```text
+ok - live Herdr lab handover: check->commit->helper->successor, default untouched
+FM_TEST_END 2026-09-13T09:18:24Z tests/fm-primary-resource-herdr-lab-e2e.test.sh exit=0 duration_ms=26917 gate_skip=false
+```
+
+The guard drives the whole Herdr transaction against the real CLI: check proposes the context handover, commit creates the helper's own non-focused workspace pane, the helper really runs in that pane, proves the occupant unchanged through `pane process-info`, delivers the real `/exit`, launches the successor into the primary pane, records the `started` outcome, closes the helper pane and workspace, and removes both launch files.
+An independent `herdr session list` before and after teardown was identical, no lab leaked, and the default session stayed byte-identical throughout.
+
+The tmux helper exit -> shell -> successor path is exercised live inside the main resource-guard suite, green the same day with `gate_skip=false`:
+
+```sh
+bin/fm-test-run.sh tests/fm-primary-resource.test.sh
+```
+
+```text
+ok - live isolated tmux helper exit->shell->successor
+FM_TEST_END 2026-09-13T09:22:02Z tests/fm-primary-resource.test.sh exit=0 duration_ms=209330 gate_skip=false
+```
+
+Both live paths drive copied binaries renamed to a harness name (bash and an editor as `claude`/`codex`) so the real process classifiers see a live agent and the occupant really exits on the delivered `/exit`; they prove the backend handover machinery, not a real harness transcript read.
+
+### Transcript-fixture context adapters
+
+The Claude and Codex context readings are proven at parser level against recorded vendor transcript shapes, pinned portably by `tests/fm-primary-resource.test.sh`: Claude JSONL usage totals (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens` from the last non-sidechain assistant usage) and the Codex rollout `token_count` -> `payload.info.last_token_usage.input_tokens`.
+No live Claude or Codex session at the 175K threshold was driven in this run, so that fixture grade is the entire current basis for calling those two adapters verified; a drifted transcript shape fails closed as a malformed-usage alert rather than a wrong handover.
+The negative fact carries the same grade: every other primary adapter is alert-only because no context parser exists for it, not because a live probe ruled the adapter unreliable.
