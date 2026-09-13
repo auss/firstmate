@@ -313,7 +313,8 @@ test_promotion_delivers_the_real_definition_of_done() {
   mkdir -p "$home/state" "$sendroot/bin"
   cat > "$sendroot/bin/fm-send.sh" <<'STUB'
 #!/usr/bin/env bash
-# Capture the message a promoted worker would receive, instead of steering one.
+# Capture the task id and message a promoted worker would receive, instead of steering one.
+printf '%s' "$1" > "$FM_TEST_CAPTURE.id"
 printf '%s' "$2" > "$FM_TEST_CAPTURE"
 STUB
   chmod +x "$sendroot/bin/fm-send.sh"
@@ -337,6 +338,9 @@ STUB
          eval "$(printf '%s\n' "$out" | sed -n 's/^next: //p' | grep 'fm-send\.sh')" ) \
       || fail "$mode: promotion's delivery command did not run"
     assert_present "$payload" "$mode: promotion delivered no message to the worker"
+    assert_present "$payload.id" "$mode: promotion did not capture the steered task id"
+    [ "$(cat "$payload.id")" = "$id" ] \
+      || fail "$mode: delivery target was '$(cat "$payload.id")' rather than the bare task id '$id'"
 
     grep -qx "Delivery contract: mode=$mode" "$payload" \
       || fail "$mode: promoted worker did not receive the machine-readable delivery contract"
@@ -395,6 +399,34 @@ STUB
   assert_no_grep "no-mistakes axi respond" "$TMP_ROOT/promote-dod/payload-promote-dod-direct-pr" \
     "promoted direct-PR worker received the pipeline gate contract"
   pass "fm-promote: a promoted worker receives the same mode-specific delivery contract a briefed one does"
+}
+
+# Promotion used to prepend fm- onto the printed fm-send.sh target, so an id that
+# already started with fm- became fm-fm-... and any other id picked up a phantom
+# fm- prefix. The hint must steer the bare task id that every other path already uses.
+test_promote_delivery_hint_targets_the_bare_task_id() {
+  local home meta out id next_line target
+  home="$TMP_ROOT/promote-id-prefix/home"
+  mkdir -p "$home/state"
+
+  for id in fm-promo-repro fmp-plain-repro; do
+    meta="$home/state/$id.meta"
+    printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$meta"
+    write_brief "$home" "$id"
+    out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+      "$PROMOTE" "$id" --mode direct-PR --yolo off 2>&1) \
+      || fail "$id: promotion should succeed"
+    next_line=$(printf '%s\n' "$out" | grep '^next: .*fm-send\.sh' || true)
+    [ -n "$next_line" ] || fail "$id: promotion printed no fm-send.sh delivery hint"
+    target=$(printf '%s\n' "$next_line" | sed -n 's/.*fm-send\.sh \([^ ]*\).*/\1/p')
+    [ "$target" = "$id" ] \
+      || fail "$id: delivery hint targeted '$target' rather than the bare task id"
+    case "$next_line" in
+      *fm-fm-*) fail "$id: delivery hint still doubled the fm- prefix" ;;
+    esac
+  done
+
+  pass "fm-promote: the delivery hint targets the bare task id without a phantom fm- prefix"
 }
 
 # The registry parser survives for the mechanical consumers only. It accepts the
@@ -799,6 +831,7 @@ test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
+test_promote_delivery_hint_targets_the_bare_task_id
 test_project_mode_maps_the_conditional_policy
 test_spawn_and_promote_require_filled_task_subsections
 echo "# all fm-task-delivery tests passed"
