@@ -89,12 +89,12 @@
 # Test seams:
 #   FM_PRIMARY_RESOURCE_QUOTA_JSON / _FILE  inject quota-axi JSON
 #   FM_PRIMARY_RESOURCE_NOW                fixed epoch seconds
-#   FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS   bound helper idle waits (default 30)
+#   FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS   bound helper waits (ready-ack 15, idle 30)
 #   FM_PRIMARY_RESOURCE_RECONCILE_SECS     stranded-helper alert bound (default 120)
 #   FM_PRIMARY_RESOURCE_STARTED_RECONCILE_SECS stalled-successor alert bound (default 1800)
 #   FM_PRIMARY_RESOURCE_BUSY_STATE_FILE    override busy|idle|unknown for helper
 #   FM_PRIMARY_RESOURCE_ROUTE_ENV_FILE     inject NUL-delimited environ for route checks
-#   FM_PRIMARY_RESOURCE_ARGV_FILE         inject NUL-delimited argv for commit capture (tests)
+#   FM_PRIMARY_RESOURCE_ARGV_FILE          inject NUL-delimited argv wherever launch argv is captured (tests)
 #   FM_PRIMARY_RESOURCE_QUOTA_BUDGET_SECS quota-axi read bound (default 20)
 #   FM_PRIMARY_RESOURCE_LOCK_SECS         state-lock wait bound (default 10)
 #   FM_PRIMARY_RESOURCE_FORCE_OWNER       bypass session-lock self-ownership (tests)
