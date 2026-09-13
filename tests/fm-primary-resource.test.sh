@@ -2,12 +2,14 @@
 # Behavior tests for bin/fm-primary-resource.sh (main-session resource protection).
 #
 # Covers: inclusive thresholds 174999/175000 and 96.99/97, both-triggers quota
-# precedence, unknown/malformed context, wrong-session/non-owner observe,
+# precedence (including over an unparseable launch argv), unknown/malformed
+# context, wrong-session/non-owner observe,
 # same-provider and stale destination rejection, duplicate incident suppression
 # at check and commit, secondmate no-op, unsupported-backend alert, commit
-# revalidation, structured stow attestation, argv admission via commit,
-# stranded-helper reconciliation, route-gateway refusal, per-window quota
-# episodes (including non-primary marker clearing and malformed source
+# revalidation, structured stow attestation, argv admission via commit
+# (including the fail-closed no-argv-source alert), portable quota claim
+# recovery, stranded-helper reconciliation, route-gateway refusal, per-window
+# quota episodes (including non-primary marker clearing and malformed source
 # windows), Herdr handover guards, outcome-write serialization under the
 # resource lock, and a live isolated tmux
 # (-L private socket) exit->shell->successor path (skipped when tmux is absent).
@@ -518,29 +520,63 @@ test_argv_admission_via_commit_rejects_interpreters() {
   pass "argv admission rejects interpreters and keeps spawned adapter flags"
 }
 
-test_ps_argv_fallback_and_portable_claim_recovery() {
-  local home q weekly_q out weekly_id
-  home=$(make_main_home ps-fallback)
+# Authorized decision (1): a rendered display string is never an argv source.
+# ps output for a live `claude --append-system-prompt 'keep X Y'` flattens to
+# loose words, so reconstructing argv from it would relaunch the agent with
+# altered settings. With no /proc cmdline and no boundary-carrying source, the
+# check must fail closed: alert unparseable-launch-argv, keep the session, and
+# never propose the handover. The fake ps deliberately prints the dangerous
+# flattened string: trusting it is exactly the relapse this test pins out.
+test_argv_source_unavailable_fails_closed() {
+  local home q out
+  home=$(make_main_home argvsrc)
   write_claude_transcript "$home/tx.jsonl" 175000
-  bind_home "$home" claude sess-ps-fallback "$home/tx.jsonl"
+  bind_home "$home" claude sess-argvsrc "$home/tx.jsonl"
+  # A pid no host can resolve (above every Linux pid_max, absent from /proc),
+  # with the session lock agreeing so the owner check passes.
+  jq -nc --arg h claude --argjson p 9999999 --arg s sess-argvsrc --arg t "$home/tx.jsonl" \
+    '{version:1, harness:$h, pid:$p, sessionId:$s, transcriptPath:$t, boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  printf '%s\n' 9999999 > "$home/state/.lock"
+  rm -f "$home/argv"
   cat > "$FAKEBIN/ps" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "env FOO='two words' claude --verbose old prompt"
+printf '%s\n' 'claude --append-system-prompt keep X Y'
 EOF
-  cat > "$FAKEBIN/find" <<'EOF'
-#!/usr/bin/env bash
-exit 1
-EOF
-  chmod +x "$FAKEBIN/ps" "$FAKEBIN/find"
+  chmod +x "$FAKEBIN/ps"
   q=$(quota_json claude 50)
-  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
-    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 FM_PRIMARY_RESOURCE_PROC_ROOT="$home/no-proc" \
-    FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
-    FM_SUPERVISOR_TARGET="fixture:agent" PATH="$FAKEBIN:$PATH" "$PR" check 2>&1 || true)
-  assert_contains "$out" "primary-resource context" \
-    "ps argv fallback must resolve env-wrapped Claude options"
+  out=$(FM_PRIMARY_RESOURCE_ARGV_FILE="$home/absent-argv" \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" \
+    run_pr "$home" check 2>&1 || true)
+  rm -f "$FAKEBIN/ps"
+  assert_contains "$out" "unparseable-launch-argv" \
+    "a host without an argv source must alert unparseable-launch-argv"
+  assert_contains "$out" "not context-handover-capable" \
+    "the alert must say the host is not handover-capable"
+  assert_contains "$out" "session kept" "the alert must keep the session open"
+  case "$out" in
+    *'primary-resource context '*) fail "a ps display string must never authorize a context handover" ;;
+  esac
+  if find "$home/state/primary-resource/proposals" -type f -print -quit 2>/dev/null | grep -q .; then
+    fail "fail-closed argv must not create a commit proposal"
+  fi
+  assert_present "$home/state/primary-resource/alerts/sess-argvsrc--unparseable-launch-argv" \
+    "the argv alert must be recorded once per generation"
+  out=$(FM_PRIMARY_RESOURCE_ARGV_FILE="$home/absent-argv" \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" \
+    run_pr "$home" check 2>&1 || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "argv alert exactly once"
+  pass "argv source unavailable fails closed as unparseable-launch-argv"
+}
 
+# Portable claim recovery: a quota commit that claimed both exhausted windows
+# but crashed before opening its episode marker must not propose a second
+# terminal handover for the already-claimed window, on any find(1) dialect.
+test_portable_claim_recovery_suppresses_second_handover() {
+  local home weekly_q out weekly_id
+  home=$(make_main_home claim-recovery)
   write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-claim-recovery "$home/tx.jsonl"
   weekly_q=$(jq -nc --argjson ea '[{"scope":"account","status":"known","effectivePercentRemaining":50,"runway":{"status":"through_reset"}}]' '
     {schemaVersion:5, providers:[
       {provider:"claude", state:{status:"ok", stale:false}, quotaSemantics:{status:"known", effectiveAvailability:$ea},
@@ -556,8 +592,43 @@ EOF
   out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$weekly_q" FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>/dev/null || true)
   assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" \
     "portable claim recovery must suppress the already-claimed weekly handover"
-  rm -f "$FAKEBIN/ps" "$FAKEBIN/find"
-  pass "ps argv fallback and portable quota claim recovery"
+  pass "portable quota claim recovery suppresses second handover"
+}
+
+# Authorized decision (3): when both triggers apply, quota handover wins even
+# with an unparseable launch argv - the quota path never consumes the captured
+# argv. The argv guard still preempts the CONTEXT handover, which relaunches
+# the same agent from that argv.
+test_quota_precedence_over_argv_guard() {
+  local home q out
+  home=$(make_main_home quota-argv)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-quota-argv "$home/tx.jsonl"
+  printf 'claude\0--unknown-option\0old prompt' > "$home/argv"
+  q=$(quota_json claude 3 codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$home/argv" \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota" \
+    "both triggers with unparseable argv must still decide quota"
+  case "$out" in
+    *unparseable-launch-argv*) fail "the argv guard must never preempt a quota handover" ;;
+  esac
+
+  home=$(make_main_home ctx-argv)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-ctx-argv "$home/tx.jsonl"
+  printf 'claude\0--unknown-option\0old prompt' > "$home/argv"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$home/argv" \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "unparseable-launch-argv" \
+    "context-only with unparseable argv must still alert"
+  case "$out" in
+    *'primary-resource context '*) fail "context handover must stay blocked behind the argv guard" ;;
+  esac
+  pass "quota wins over the argv guard; context stays guarded"
 }
 
 test_arm_requires_python3() {
@@ -1765,7 +1836,9 @@ test_commit_revalidates_and_refuses_stale
 test_commit_revalidation_rejects_invalid_quota_json
 test_stow_attestation_rejects_negative_prose
 test_argv_admission_via_commit_rejects_interpreters
-test_ps_argv_fallback_and_portable_claim_recovery
+test_argv_source_unavailable_fails_closed
+test_portable_claim_recovery_suppresses_second_handover
+test_quota_precedence_over_argv_guard
 test_arm_requires_python3
 test_arm_shim_quotes_tricky_home_paths
 test_helper_busy_then_idle_fake_backend

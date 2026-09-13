@@ -519,9 +519,6 @@ pr_decide_jq() {
 | if ($be_ok == false) then
     {action:"alert", incidentId:("alert-backend-" + $gen), reason:"unsupported-backend",
      replacement:null, alertKey:($gen + "--unsupported-backend")}
-  elif ($argv_ok == false) and $ctx_hit then
-    {action:"alert", incidentId:("alert-argv-" + $gen), reason:"unparseable-launch-argv",
-     replacement:null, alertKey:($gen + "--unparseable-launch-argv")}
   elif $quota_hit then
     (if ($r != null) and ($r.eligible == true)
      then
@@ -541,6 +538,12 @@ pr_decide_jq() {
             replacement:null, alertKey:$ak}
          end
      end)
+  elif ($argv_ok == false) and $ctx_hit then
+    {action:"alert", incidentId:("alert-argv-" + $gen),
+     reason:("unparseable-launch-argv: launch argv unreadable or ambiguous " +
+             "(needs /proc/<pid>/cmdline with explicit argument boundaries); " +
+             "this host is not context-handover-capable; hand over manually"),
+     replacement:null, alertKey:($gen + "--unparseable-launch-argv")}
   elif $ctx_hit then
     ($e.incidentIdContext // ("context-" + $gen)) as $cid
     | if (($receipts | index($cid)) != null) then
@@ -1228,33 +1231,22 @@ pr_outcome_write() {  # <incident> <stage> <reason> [<helper-endpoint>]
   return "$record_rc"
 }
 
+# The launch argv is captured ONLY from a source whose argument boundaries
+# are explicit: the NUL-delimited /proc/<pid>/cmdline (or the ARGV_FILE test
+# seam). A rendered display string such as `ps -o args=` destroys boundaries,
+# so a host with no such source is not context-handover-capable and the check
+# fails closed as unparseable-launch-argv instead of guessing.
 pr_capture_argv() {  # <pid> <dest>
-  local pid=$1 dest=$2 proc_root=${FM_PRIMARY_RESOURCE_PROC_ROOT:-/proc}
+  local pid=$1 dest=$2
   if [ -n "${FM_PRIMARY_RESOURCE_ARGV_FILE:-}" ] && [ -f "$FM_PRIMARY_RESOURCE_ARGV_FILE" ]; then
     cat -- "$FM_PRIMARY_RESOURCE_ARGV_FILE" > "$dest" || return 1
     return 0
   fi
-  if [ -r "$proc_root/$pid/cmdline" ]; then
-    cat "$proc_root/$pid/cmdline" > "$dest" || return 1
+  if [ -r "/proc/$pid/cmdline" ]; then
+    cat "/proc/$pid/cmdline" > "$dest" || return 1
     return 0
   fi
-  LC_ALL=C ps -p "$pid" -o args= > "$dest" 2>/dev/null || return 1
-  python3 - "$dest" <<'PY' 2>/dev/null || return 1
-import shlex, sys
-
-path = sys.argv[1]
-raw = open(path, "rb").read()
-if b"\n" in raw.rstrip(b"\n"):
-    sys.exit(1)
-try:
-    args = shlex.split(raw.decode("utf-8", "surrogateescape").strip(), posix=True)
-except ValueError:
-    sys.exit(1)
-if not args:
-    sys.exit(1)
-open(path, "wb").write(b"\0".join(a.encode("utf-8", "surrogateescape") for a in args) + b"\0")
-PY
-  return 0
+  return 1
 }
 
 pr_strip_resume_argv() {  # <nul-argv-file> <harness> -> shell-quoted command line
@@ -1262,8 +1254,7 @@ pr_strip_resume_argv() {  # <nul-argv-file> <harness> -> shell-quoted command li
   # them) plus the old positional prompt. Keep captain posture flags such as
   # --dangerously-skip-permissions. Unknown option arity fails closed.
 # argv[0] MUST resolve to the expected harness executable (basename match);
-# simple environment assignments are retained while interpreter wrappers are
-# refused before parsing.
+# interpreter wrappers are refused before parsing.
   local file=$1 harness=$2
   pr_require_python3 || return 1
   python3 - "$file" "$harness" <<'PY' 2>/dev/null || return 1
@@ -1273,19 +1264,6 @@ harness = sys.argv[2]
 args = [a.decode("utf-8", "surrogateescape") for a in raw if a]
 if not args:
     sys.exit(1)
-
-env_prefix = []
-if os.path.basename(args[0].rstrip("/")) == "env":
-    i = 1
-    while i < len(args) and "=" in args[i]:
-        name, value = args[i].split("=", 1)
-        if not name or not (name[0].isalpha() or name[0] == "_") or not all(c.isalnum() or c == "_" for c in name):
-            sys.exit(1)
-        env_prefix.append(name + "=" + shlex.quote(value))
-        i += 1
-    args = args[i:]
-    if not args:
-        sys.exit(1)
 
 def basename(p):
     return os.path.basename(p.rstrip("/")) or p
@@ -1376,7 +1354,7 @@ while i < len(args):
         sys.exit(1)
     # positional prompt: drop for a fresh conversation
     i += 1
-print(" ".join(env_prefix + [shlex.quote(x) for x in out]))
+print(" ".join(shlex.quote(x) for x in out))
 PY
 }
 
@@ -1520,7 +1498,7 @@ pr_commit_revalidate() {  # <incident> <expected-action> -> 0 if still warranted
     # Name the concrete cause when it is one an operator can act on, rather
     # than collapsing every mismatch into "no longer warranted".
     [ "$argv_ok" = false ] && \
-      PR_REVALIDATE_REASON='unparseable launch argv (wrapper/interpreter refused or unknown options)'
+      PR_REVALIDATE_REASON='unparseable launch argv (no argv source with explicit argument boundaries, wrapper/interpreter refused, or unknown options)'
     return 1
   fi
   [ "$fresh_id" = "$incident" ] || return 1
@@ -1641,12 +1619,12 @@ action_commit() {
   if [ "$action" = context ]; then
     if ! pr_capture_argv "$pid" "$argv_file"; then
       pr_lock_release
-      printf 'fm-primary-resource: cannot capture launch argv (unreadable or ambiguous)\n' >&2
+      printf 'fm-primary-resource: cannot capture launch argv (no /proc cmdline and no other source with explicit argument boundaries; this host is not context-handover-capable)\n' >&2
       return 1
     fi
     if ! launch_cmd=$(pr_strip_resume_argv "$argv_file" "$src_h"); then
       pr_lock_release
-      printf 'fm-primary-resource: unparseable launch argv (interpreter refused or unknown options)\n' >&2
+      printf 'fm-primary-resource: unparseable launch argv (wrapper/interpreter refused or unknown options)\n' >&2
       rm -f -- "$argv_file"
       return 1
     fi
