@@ -1,0 +1,56 @@
+=== A. promote with the FIXED script (worktree @ target commit) ===
+  [fm-live-promo] promote exit=0
+  [fm-live-promo] printed hint: next: FM_HOME=/tmp/fm-promote-id-live.q0Tqdr/home-fixed bin/fm-send.sh fm-live-promo "$(cat /tmp/fm-promote-id-live.q0Tqdr/home-fixed/data/fm-live-promo/ship-instructions.md)"
+ok   - fm-live-promo: hint targets the bare task id ('fm-live-promo')
+ok   - fm-live-promo: no fm-fm- doubling in the hint
+ok   - fm-live-promo: ship instructions written with the mode contract
+  [fmp-live-plain] promote exit=0
+  [fmp-live-plain] printed hint: next: FM_HOME=/tmp/fm-promote-id-live.q0Tqdr/home-fixed bin/fm-send.sh fmp-live-plain "$(cat /tmp/fm-promote-id-live.q0Tqdr/home-fixed/data/fmp-live-plain/ship-instructions.md)"
+ok   - fmp-live-plain: hint targets the bare task id ('fmp-live-plain')
+ok   - fmp-live-plain: no fm-fm- doubling in the hint
+ok   - fmp-live-plain: ship instructions written with the mode contract
+  [plain-live] promote exit=0
+  [plain-live] printed hint: next: FM_HOME=/tmp/fm-promote-id-live.q0Tqdr/home-fixed bin/fm-send.sh plain-live "$(cat /tmp/fm-promote-id-live.q0Tqdr/home-fixed/data/plain-live/ship-instructions.md)"
+ok   - plain-live: hint targets the bare task id ('plain-live')
+ok   - plain-live: no fm-fm- doubling in the hint
+ok   - plain-live: ship instructions written with the mode contract
+
+=== B. reproduce the reported bug with the PRE-FIX script (base commit) ===
+  [fm-live-promo] pre-fix printed hint: next: FM_HOME=/tmp/fm-promote-id-live.q0Tqdr/home-base bin/fm-send.sh fm-fm-live-promo "$(cat /tmp/fm-promote-id-live.q0Tqdr/home-base/data/fm-live-promo/ship-instructions.md)"
+ok   - base fm-live-promo: reproduced double/phantom prefix ('fm-fm-live-promo')
+  [fmp-live-plain] pre-fix printed hint: next: FM_HOME=/tmp/fm-promote-id-live.q0Tqdr/home-base bin/fm-send.sh fm-fmp-live-plain "$(cat /tmp/fm-promote-id-live.q0Tqdr/home-base/data/fmp-live-plain/ship-instructions.md)"
+ok   - base fmp-live-plain: reproduced double/phantom prefix ('fm-fmp-live-plain')
+  [plain-live] pre-fix printed hint: next: FM_HOME=/tmp/fm-promote-id-live.q0Tqdr/home-base bin/fm-send.sh fm-plain-live "$(cat /tmp/fm-promote-id-live.q0Tqdr/home-base/data/plain-live/ship-instructions.md)"
+ok   - base plain-live: reproduced double/phantom prefix ('fm-plain-live')
+
+=== C. end-to-end: run the printed hint verbatim with the REAL bin/fm-send.sh ===
+  executing verbatim from the repo root: FM_HOME=/tmp/fm-promote-id-live.q0Tqdr/home-fixed bin/fm-send.sh fmp-live-plain "$(cat /tmp/fm-promote-id-live.q0Tqdr/home-fixed/data/fmp-live-plain/ship-instructions.md)"
+  fm-send exit=0
+    fm-send: WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    fm-send: fm-send: doorbell did not reach fm-fmp-live-plain; the steer is durably recorded at /tmp/fm-promote-id-live.q0Tqdr/home-fixed/state/fmp-live-plain.inbox/001.msg and the watcher will re-ring
+ok   - printed hint ran verbatim against the real fm-send.sh and exited 0
+  steering inbox record: /tmp/fm-promote-id-live.q0Tqdr/home-fixed/state/fmp-live-plain.inbox/001.msg
+ok   - ship instructions durably recorded in the task's steering inbox
+    record: schema=fm-task-inbox.v1
+    record: at=2026-09-13T12:03:40Z
+    record: --
+    record: Your scout task has been promoted to a ship task, mode=direct-PR. Your window, worktree, and context stay as they are; only the contract below changes.
+    record: 
+    record: # Task
+ok   - delivery landed under the bare-id inbox state/fmp-live-plain.inbox (no state/fm-fmp-live-plain.inbox)
+
+=== D. adversarial: pre-fix doubled spelling vs the REAL fm-send.sh ===
+  [fm-live-promo] doubled spelling 'fm-fm-live-promo' exited 0; record landed under: fm-live-promo.inbox 
+    -> resolved only through fm-send's legacy fm-<id> label fallback (strips one fm-) onto the bare task's own inbox; the fixed hint no longer relies on that legacy path
+  [fmp-live-plain] doubled spelling 'fm-fmp-live-plain' exited 0; record landed under: fm-live-promo.inbox fmp-live-plain.inbox 
+    -> resolved only through fm-send's legacy fm-<id> label fallback (strips one fm-) onto the bare task's own inbox; the fixed hint no longer relies on that legacy path
+  [fm-fm-unrecorded] unresolvable doubled spelling exit=1 ->
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    error: no metadata for fm-fm-unrecorded in /tmp/fm-promote-id-live.q0Tqdr/home-fixed/state (tried meta=/tmp/fm-promote-id-live.q0Tqdr/home-fixed/state/fm-fm-unrecorded.meta; legacy-meta=/tmp/fm-promote-id-live.q0Tqdr/home-fixed/state/fm-unrecorded.meta; backend=none); pass a well-formed explicit backend target only when targeting outside this firstmate home
+
+ALL LIVE CHECKS PASSED
+
+=== E. repo regression suite: fail-before / pass-after ===
+target commit (worktree)  : bash tests/fm-task-delivery.test.sh -> '# all fm-task-delivery tests passed' (incl. 'ok - fm-promote: the delivery hint targets the bare task id without a phantom fm- prefix')
+base commit bin, new test : not ok - no-mistakes: delivery target was 'fm-promote-dod-no-mistakes' rather than the bare task id 'promote-dod-no-mistakes'
+base commit bin, new test : not ok - fm-promo-repro: delivery hint targeted 'fm-fm-promo-repro' rather than the bare task id
