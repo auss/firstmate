@@ -1029,8 +1029,8 @@ SH
 }
 
 wait_for_stub_calls() {  # <root> <count>
-  local i
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  local _
+  for _ in $(seq 1 20); do
     [ "$(grep -c . "$1/stow-calls" 2>/dev/null || echo 0)" -ge "$2" ] && return 0
     sleep 0.2
   done
