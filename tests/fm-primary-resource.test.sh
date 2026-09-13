@@ -11,7 +11,8 @@
 # recovery, stranded-helper reconciliation, route-gateway refusal, per-window
 # quota episodes (including non-primary marker clearing and malformed source
 # windows), Herdr handover guards, outcome-write serialization under the
-# resource lock, and a live isolated tmux
+# resource lock, agy alert-only context and agy quota handover in both
+# directions (including stale/unknown agy rows), and a live isolated tmux
 # (-L private socket) exit->shell->successor path (skipped when tmux is absent).
 set -u
 
@@ -90,6 +91,30 @@ write_codex_transcript() {
   mkdir -p "$(dirname -- "$path")"
   jq -nc --argjson t "$tokens" \
     '{type:"event_msg", payload:{info:{last_token_usage:{input_tokens:$t}}}}' > "$path"
+}
+
+# Recorded agy 1.2.x step shape: no token usage field exists. <bytes> of content
+# lets a fixture exceed any byte-based 175K-token estimate.
+write_agy_transcript() {  # <path> <content-bytes>
+  local path=$1 bytes=$2
+  mkdir -p "$(dirname -- "$path")"
+  jq -nc --arg c "$(head -c "$bytes" /dev/zero | tr '\0' x)" \
+    '{step_index:0, source:"MODEL", type:"PLANNER_RESPONSE", status:"DONE", created_at:"2026-09-13T15:31:53Z", content:$c}' \
+    > "$path"
+}
+
+# Append a provider row: <quota-json> <provider> <percentRemaining> [stale] [semantics-status]
+QBASE='{"schemaVersion":5,"providers":[]}'
+add_quota_provider() {
+  printf '%s' "$1" | jq -c --arg p "$2" --argjson r "$3" --argjson stale "${4:-false}" --arg qs "${5:-known}" '
+    .providers += [{provider:$p, state:{status:"ok", stale:$stale},
+      quotaSemantics:{status:$qs, effectiveAvailability:(if $qs == "known"
+        then [{scope:"account", status:"known", effectivePercentRemaining:50, runway:{status:"through_reset"}}]
+        else [] end)},
+      windows:[
+        {id:"five_hour", kind:"session", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:$r},
+        {id:"weekly", kind:"weekly", resetsAt:"2026-09-18T00:00:00Z", percentRemaining:$r}
+      ]}]'
 }
 
 write_malformed_transcript() {
@@ -1269,6 +1294,135 @@ test_commit_endpoint_on_outcome_not_receipt() {
   pass "commit keeps helperEndpoint off the immutable receipt"
 }
 
+assert_no_proposal() {  # <home> <message>
+  if find "$1/state/primary-resource/proposals" -type f -print -quit 2>/dev/null | grep -q .; then
+    fail "$2"
+  fi
+}
+
+test_agy_context_is_alert_only() {
+  local home out case_name
+  for case_name in below above empty corrupt missing; do
+    home=$(make_main_home "agy-ctx-$case_name")
+    case "$case_name" in
+      below) write_agy_transcript "$home/tx.jsonl" 1000 ;;
+      above) write_agy_transcript "$home/tx.jsonl" 800000 ;;
+      empty) : > "$home/tx.jsonl" ;;
+      corrupt) printf '{"step_index":\n' > "$home/tx.jsonl" ;;
+      missing) ;;
+    esac
+    bind_home "$home" agy "sess-agy-$case_name" "$home/tx.jsonl"
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$(add_quota_provider "$QBASE" agy 50)" \
+      FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>&1 || true)
+    assert_contains "$out" "primary-resource alert" "agy $case_name transcript must alert"
+    case "$out" in
+      *'primary-resource context'*|*'primary-resource quota'*) fail "agy $case_name transcript must not propose handover (got: $out)" ;;
+    esac
+    assert_no_proposal "$home" "agy $case_name transcript must not store a proposal"
+    if [ "$case_name" = missing ]; then
+      assert_contains "$out" "missing-binding" "missing agy transcript reason"
+    else
+      assert_contains "$out" "agy-no-usage" "agy $case_name transcript reason"
+    fi
+  done
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$(add_quota_provider "$QBASE" agy 50)" \
+    FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>&1 || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "agy context alert must fire once per generation"
+  pass "agy context stays alert-only for below, above, empty, corrupt, and missing transcripts"
+}
+
+test_agy_quota_handover_both_directions() {
+  local home q out incident rc
+  # agy source exhausted -> claude destination, committed through the helper.
+  home=$(make_main_home agy-to-claude)
+  write_agy_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" agy sess-agy-src "$home/tx.jsonl"
+  q=$(add_quota_provider "$(add_quota_provider "$QBASE" agy 2)" claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota" "exhausted agy must propose quota handover"
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  write_stow_ok "$home/stow.md" "$incident" sess-agy-src
+  printf '#!/usr/bin/env bash\necho ok\n' > "$FAKEBIN/claude"
+  chmod +x "$FAKEBIN/claude"
+  install_helper_tmux
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 0 "$rc" "agy->claude quota commit must launch its helper"
+  assert_equals "agy/agy/claude/claude" \
+    "$(jq -r '"\(.sourceHarness)/\(.sourceProvider)/\(.destinationHarness)/\(.destinationProvider)"' \
+      "$home/state/primary-resource/receipts/$incident.json")" "agy->claude receipt"
+
+  # claude source exhausted, codex also exhausted -> agy destination.
+  home=$(make_main_home claude-to-agy)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-to-agy "$home/tx.jsonl"
+  q=$(add_quota_provider "$(add_quota_provider "$(add_quota_provider "$QBASE" claude 2)" codex 1)" agy 60)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota" "claude with exhausted codex must fall through to agy"
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  write_stow_ok "$home/stow.md" "$incident" sess-to-agy
+  printf '#!/usr/bin/env bash\necho ok\n' > "$FAKEBIN/agy"
+  chmod +x "$FAKEBIN/agy"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 0 "$rc" "claude->agy quota commit must launch its helper"
+  assert_equals "agy" "$(jq -r .destinationHarness "$home/state/primary-resource/receipts/$incident.json")" \
+    "claude->agy receipt destination"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -f "$home/$incident.cmd" ] && break
+    sleep 0.2
+  done
+  assert_contains "$(cat "$home/$incident.cmd" 2>/dev/null)" "--prompt-interactive" \
+    "agy successor must keep an interactive session"
+
+  # A codex preference still wins over agy when codex is eligible.
+  home=$(make_main_home claude-prefers-codex)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-pref "$home/tx.jsonl"
+  q=$(add_quota_provider "$(add_quota_provider "$(add_quota_provider "$QBASE" claude 2)" codex 50)" agy 60)
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check >/dev/null 2>&1 || true
+  assert_equals "codex" "$(jq -r .replacement.harness "$home"/state/primary-resource/proposals/*.json)" \
+    "codex stays the preferred claude destination"
+  pass "agy quota handover works as source and destination"
+}
+
+test_agy_stale_or_unknown_quota_is_alert_only() {
+  local home q out variant
+  # Source side: an unreliable agy row never mints a quota handover.
+  for variant in stale unknown; do
+    home=$(make_main_home "agy-src-$variant")
+    write_agy_transcript "$home/tx.jsonl" 1000
+    bind_home "$home" agy "sess-agy-$variant" "$home/tx.jsonl"
+    if [ "$variant" = stale ]; then
+      q=$(add_quota_provider "$QBASE" agy 1 true)
+    else
+      q=$(add_quota_provider "$QBASE" agy 1 false unknown)
+    fi
+    q=$(add_quota_provider "$q" claude 50)
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+      run_pr "$home" check 2>&1 || true)
+    case "$out" in
+      *'primary-resource quota'*) fail "$variant agy source row must not propose quota handover" ;;
+    esac
+    assert_contains "$out" "primary-resource alert" "$variant agy source row must stay alert-only"
+    assert_no_proposal "$home" "$variant agy source row must not store a proposal"
+  done
+  # Destination side: a stale agy row is not an eligible fallback.
+  home=$(make_main_home agy-dest-stale)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-agy-dest "$home/tx.jsonl"
+  q=$(add_quota_provider "$(add_quota_provider "$(add_quota_provider "$QBASE" claude 2)" codex 1)" agy 60 true)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "alert" "stale agy destination must alert"
+  assert_no_proposal "$home" "stale agy destination must not store a proposal"
+  pass "stale or unknown agy quota rows stay alert-only"
+}
+
 # Finding 6: custom route/gateway refuses independence claim.
 test_custom_route_gateway_refuses_quota_replacement() {
   local home q out envf
@@ -1864,6 +2018,9 @@ test_reconcile_same_second_successor
 test_stalled_successor_alert_bound
 test_commit_endpoint_on_outcome_not_receipt
 test_custom_route_gateway_refuses_quota_replacement
+test_agy_context_is_alert_only
+test_agy_quota_handover_both_directions
+test_agy_stale_or_unknown_quota_is_alert_only
 test_quota_episode_blocks_second_window
 test_episode_cleared_for_nonprimary_provider
 test_ambiguous_resets_at_is_alert_only
