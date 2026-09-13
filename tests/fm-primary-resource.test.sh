@@ -1,0 +1,1881 @@
+#!/usr/bin/env bash
+# Behavior tests for bin/fm-primary-resource.sh (main-session resource protection).
+#
+# Covers: inclusive thresholds 174999/175000 and 96.99/97, both-triggers quota
+# precedence (including over an unparseable launch argv), unknown/malformed
+# context, wrong-session/non-owner observe,
+# same-provider and stale destination rejection, duplicate incident suppression
+# at check and commit, secondmate no-op, unsupported-backend alert, commit
+# revalidation, structured stow attestation, argv admission via commit
+# (including the fail-closed no-argv-source alert), portable quota claim
+# recovery, stranded-helper reconciliation, route-gateway refusal, per-window
+# quota episodes (including non-primary marker clearing and malformed source
+# windows), Herdr handover guards, outcome-write serialization under the
+# resource lock, and a live isolated tmux
+# (-L private socket) exit->shell->successor path (skipped when tmux is absent).
+set -u
+
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+PR="$ROOT/bin/fm-primary-resource.sh"
+TMP_ROOT=$(fm_test_tmproot fm-primary-resource)
+FAKEBIN=$(fm_fakebin "$TMP_ROOT")
+TRACK_TMUX_SOCKETS=""
+
+GLOBAL_CLEANUP() {
+  local sock
+  for sock in $TRACK_TMUX_SOCKETS; do
+    tmux -L "$sock" kill-server 2>/dev/null || true
+  done
+}
+trap 'GLOBAL_CLEANUP; fm_test_cleanup' EXIT
+
+run_pr() {
+  local home=$1
+  shift
+  env FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 \
+    FM_SUPERVISOR_TARGET="${FM_SUPERVISOR_TARGET:-fixture:agent}" \
+    FM_SUPERVISOR_BACKEND="${FM_SUPERVISOR_BACKEND:-tmux}" \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="${FM_PRIMARY_RESOURCE_ARGV_FILE:-$home/argv}" \
+    PATH="$FAKEBIN:$PATH" \
+    "$PR" "$@"
+}
+
+install_helper_tmux() {
+  cat > "$FAKEBIN/tmux" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = new-session ]; then
+  command="${!#}"
+  # The real helper deletes launch cmd files after its attempt; snapshot them
+  # at launch time, the deterministic moment commit guarantees they exist.
+  cp -f "$FM_HOME"/state/primary-resource/launch/*.cmd "$FM_HOME/" 2>/dev/null || true
+  bash -c "$command" >/dev/null 2>&1 &
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$FAKEBIN/tmux"
+}
+
+make_main_home() {
+  local name=$1 home
+  home="$TMP_ROOT/$name"
+  mkdir -p "$home/state" "$home/config" "$home/data"
+  git -C "$home" init -q
+  printf '# fixture AGENTS\n' > "$home/AGENTS.md"
+  ln -sfn "$ROOT/bin" "$home/bin"
+  printf '%s\n' "$$" > "$home/state/.lock"
+  printf '%s\n' "$home"
+}
+
+make_secondmate_home() {
+  local home
+  home=$(make_main_home "$1")
+  printf 'mate1\n' > "$home/.fm-secondmate-home"
+  printf '%s\n' "$home"
+}
+
+write_claude_transcript() {
+  local path=$1 tokens=$2
+  mkdir -p "$(dirname -- "$path")"
+  jq -nc --argjson t "$tokens" \
+    '{type:"assistant", isSidechain:false, message:{usage:{input_tokens:$t, cache_creation_input_tokens:0, cache_read_input_tokens:0}}}' \
+    > "$path"
+}
+
+write_codex_transcript() {
+  local path=$1 tokens=$2
+  mkdir -p "$(dirname -- "$path")"
+  jq -nc --argjson t "$tokens" \
+    '{type:"event_msg", payload:{info:{last_token_usage:{input_tokens:$t}}}}' > "$path"
+}
+
+write_malformed_transcript() {
+  local path=$1
+  mkdir -p "$(dirname -- "$path")"
+  printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":"nope"}}}' > "$path"
+}
+
+write_stow_ok() {  # <path> <incident> <generation>
+  cat > "$1" <<EOF
+FM_PRIMARY_RESOURCE_STOW_V1
+verdict=reset-safe
+incidentId=$2
+generation=$3
+EOF
+}
+
+quota_json() {
+  local provider=$1 remaining=$2
+  local dest=${3:-} dest_rem=${4:-100} stale=${5:-false}
+  local five_kind=${6:-session}
+  local ea
+  ea='[{"scope":"account","status":"known","effectivePercentRemaining":50,"runway":{"status":"through_reset"}}]'
+  if [ -n "$dest" ]; then
+    jq -nc --arg p "$provider" --argjson r "$remaining" --arg d "$dest" --argjson dr "$dest_rem" --arg fk "$five_kind" \
+      --argjson stale "$stale" --argjson ea "$ea" '
+      {schemaVersion:5, providers:[
+        {provider:$p, state:{status:"ok", stale:false},
+         quotaSemantics:{status:"known", effectiveAvailability:$ea},
+         windows:[
+           {id:"five_hour", kind:$fk, label:"5h", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:$r},
+           {id:"seven_day", kind:"weekly", label:"wk", resetsAt:"2026-09-18T00:00:00Z", percentRemaining:50}
+         ]},
+        {provider:$d, state:{status:"ok", stale:$stale},
+         quotaSemantics:{status:"known", effectiveAvailability:$ea},
+         windows:[
+           {id:"five_hour", kind:"session", label:"5h", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:$dr},
+           {id:"weekly", kind:"weekly", label:"wk", resetsAt:"2026-09-18T00:00:00Z", percentRemaining:$dr}
+         ]}
+      ]}'
+  else
+    jq -nc --arg p "$provider" --argjson r "$remaining" --arg fk "$five_kind" --argjson ea "$ea" '
+      {schemaVersion:5, providers:[
+        {provider:$p, state:{status:"ok", stale:false},
+         quotaSemantics:{status:"known", effectiveAvailability:$ea},
+         windows:[
+           {id:"five_hour", kind:$fk, label:"5h", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:$r},
+           {id:"seven_day", kind:"weekly", label:"wk", resetsAt:"2026-09-18T00:00:00Z", percentRemaining:50}
+         ]}
+      ]}'
+  fi
+}
+
+bind_home() {
+  local home=$1 harness=$2 session=$3 transcript=$4
+  mkdir -p "$home/state/primary-resource"
+  jq -nc --arg h "$harness" --argjson p "$$" --arg s "$session" --arg t "$transcript" \
+    '{version:1, harness:$h, pid:$p, sessionId:$s, transcriptPath:$t, boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  printf '%s\0' "$harness" > "$home/argv"
+}
+
+test_check_context_thresholds() {
+  local home q out
+  home=$(make_main_home context-below)
+  write_claude_transcript "$home/tx.jsonl" 174999
+  bind_home "$home" claude sess-context-below "$home/tx.jsonl"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "174999 must stay below context threshold"
+
+  home=$(make_main_home context-at)
+  write_claude_transcript "$home/tx.jsonl" 175000
+  bind_home "$home" claude sess-context-at "$home/tx.jsonl"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "primary-resource context" "175000 must trigger context inclusive"
+  pass "check context 174999/175000"
+}
+
+test_quota_percent_filter_96_99() {
+  local home q out
+  home=$(make_main_home qfilter)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-q "$home/tx.jsonl"
+  q=$(quota_json claude 3.01)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "96.99% used must not wake"
+  q=$(quota_json claude 3 codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "primary-resource quota" "97% used must wake a quota handover"
+  pass "check filters 96.99 vs 97 percent used"
+}
+
+test_unparseable_context_is_alert_only() {
+  local home q out
+  home=$(make_main_home unparseable-context)
+  write_codex_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" codex sess-unparseable-context "$home/tx.jsonl"
+  printf 'codex\0--unknown-option\0old prompt' > "$home/argv"
+  q=$(quota_json codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "unparseable-launch-argv" \
+    "unparseable context argv must alert before stow"
+  case "$out" in
+    *'primary-resource context '*) fail "unparseable context argv must not propose handover" ;;
+  esac
+  if find "$home/state/primary-resource/proposals" -type f -print -quit | grep -q .; then
+    fail "unparseable context argv must not create a commit proposal"
+  fi
+  pass "unparseable context argv is alert-only"
+}
+
+test_invalid_destination_quota_is_alert_only() {
+  local value home q out
+  for value in 150 -1; do
+    home=$(make_main_home "invalid-destination-$value")
+    write_claude_transcript "$home/tx.jsonl" 1000
+    bind_home "$home" claude "sess-invalid-destination-$value" "$home/tx.jsonl"
+    q=$(quota_json claude 3 codex "$value")
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+      run_pr "$home" check 2>&1 || true)
+    assert_contains "$out" "primary-resource alert" \
+      "destination $value must leave the source session alert-only"
+    case "$out" in
+      *'primary-resource quota '*) fail "destination $value must not propose quota handover" ;;
+    esac
+  done
+
+  home=$(make_main_home valid-destination)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-valid-destination "$home/tx.jsonl"
+  q=$(quota_json claude 3 codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "primary-resource quota" \
+    "in-range destination must remain eligible"
+  pass "invalid destination quota is alert-only"
+}
+
+test_check_quota_wins_both() {
+  local home q out
+  home=$(make_main_home quota-wins)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-quota-wins "$home/tx.jsonl"
+  q=$(quota_json claude 3 codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "primary-resource quota" "quota must win when both triggers apply"
+  case "$out" in *'primary-resource context '*) fail "quota must take precedence over context" ;; esac
+  pass "check quota wins over context"
+}
+
+test_quota_five_hour_schema_variants() {
+  local kind home q out
+  for kind in session five_hour; do
+    home=$(make_main_home "five-hour-$kind")
+    write_claude_transcript "$home/tx.jsonl" 1000
+    bind_home "$home" claude "sess-five-hour-$kind" "$home/tx.jsonl"
+    q=$(quota_json claude 3 codex 50 false "$kind")
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+      run_pr "$home" check 2>&1 || true)
+    assert_contains "$out" "primary-resource quota" "five-hour $kind shape at 97% must trigger quota handover"
+  done
+  pass "five-hour session and fixture shapes trigger at 97%"
+}
+
+test_observe_wrong_session_and_non_owner() {
+  local home tx
+  home=$(make_main_home obs)
+  tx="$home/tx.jsonl"
+  write_claude_transcript "$tx" 1000
+  mkdir -p "$home/state/primary-resource"
+  jq -nc --argjson p "$$" --arg t "$tx" \
+    '{version:1, harness:"claude", pid:$p, sessionId:"old-sess", transcriptPath:$t, boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  printf '%s\n' "{\"session_id\":\"new-sess\",\"transcript_path\":\"$tx\",\"harness\":\"claude\"}" \
+    | FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+      FM_PRIMARY_RESOURCE_FORCE_OWNER=1 \
+      "$PR" observe
+  assert_equals "old-sess" "$(jq -r .sessionId "$home/state/primary-resource/binding.json")" \
+    "live wrong-session observe must not overwrite binding"
+
+  printf '1\n' > "$home/state/.lock"
+  rm -f "$home/state/primary-resource/binding.json"
+  printf '%s\n' "{\"session_id\":\"s2\",\"transcript_path\":\"$tx\",\"harness\":\"claude\"}" \
+    | FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+      "$PR" observe || true
+  assert_absent "$home/state/primary-resource/binding.json" "non-owner observe must not write a binding"
+  pass "observe rejects wrong session and non-owner"
+}
+
+test_observe_stdin_no_args_writes_binding() {
+  local home tx
+  home=$(make_main_home obs-stdin)
+  tx="$home/tx.jsonl"
+  write_claude_transcript "$tx" 1000
+  printf '%s\n' "$$" > "$home/state/.lock"
+  printf '%s\n' "{\"session_id\":\"pipe-sess\",\"transcript_path\":\"$tx\",\"harness\":\"claude\"}" \
+    | FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+      FM_PRIMARY_RESOURCE_FORCE_OWNER=1 \
+      "$PR" observe
+  assert_present "$home/state/primary-resource/binding.json" \
+    "no-arg observe must read stdin and write binding.json"
+  assert_equals "pipe-sess" "$(jq -r .sessionId "$home/state/primary-resource/binding.json")"
+  assert_equals "$$" "$(jq -r .pid "$home/state/primary-resource/binding.json")" \
+    "observe must record the bare lock pid"
+  pass "observe stdin with no args writes binding"
+}
+
+test_unsupported_adapter_stays_alert_only() {
+  local home tx out
+  home=$(make_main_home pi-alert)
+  tx="$home/tx.jsonl"
+  # bin/fm-harness.sh checks CLAUDECODE before PI_CODING_AGENT, so the marker of
+  # whatever harness runs this suite would otherwise decide the verdict. Clear
+  # every competing marker so the intended pi adapter is what gets detected.
+  printf '%s\n' '{"stop_hook_active":false}' | env -u CLAUDECODE -u GROK_AGENT \
+    -u FM_OMP_HARNESS -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_INVOKED_AS \
+    -u ATLASSIAN_AGENT_TYPE -u ROVODEV_CLI PI_CODING_AGENT=true \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 "$PR" observe
+  assert_absent "$home/state/primary-resource/binding.json" "pi payload without a session id must not bind"
+  # run_pr is a shell function, so the markers are cleared in a subshell rather
+  # than through env(1), which can only exec a real binary.
+  out=$(
+    unset CLAUDECODE GROK_AGENT FM_OMP_HARNESS FM_PI_HARNESS GEMINI_CLI \
+      CURSOR_INVOKED_AS ATLASSIAN_AGENT_TYPE ROVODEV_CLI
+    PI_CODING_AGENT=true FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" \
+      FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>&1 || true
+  )
+  assert_contains "$out" "adapter pi is alert-only" "unsupported adapter must explain its alert-only status"
+  if find "$home/state/primary-resource/proposals" -type f -print -quit | grep -q .; then
+    fail "unsupported adapter must not propose handover"
+  fi
+
+  write_codex_transcript "$tx" 175000
+  # observe resolves the harness from bin/fm-harness.sh, and codex is detected by
+  # process ancestry rather than any environment marker, so a suite running under
+  # another harness cannot make observe record a codex binding. Establish the
+  # binding directly, the same way the other codex cases do, and assert the part
+  # that is actually about this guard: a supported adapter still proposes.
+  bind_home "$home" codex codex-sess "$tx"
+  assert_equals "codex" "$(jq -r .harness "$home/state/primary-resource/binding.json")" \
+    "codex must retain a supported binding"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json codex 50)" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "primary-resource context" "codex must still propose at the reliable context threshold"
+  pass "unsupported adapters alert only while codex remains eligible"
+}
+
+test_check_lock_pid_mismatch_alert() {
+  local home tx q out
+  home=$(make_main_home lock-mismatch)
+  tx="$home/tx.jsonl"
+  write_claude_transcript "$tx" 1000
+  mkdir -p "$home/state/primary-resource"
+  jq -nc --arg t "$tx" \
+    '{version:1, harness:"claude", pid:999999, sessionId:"mismatch", transcriptPath:$t, boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  printf '%s\n' "$$" > "$home/state/.lock"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "binding pid does not own the session lock" \
+    "check must alert when binding pid != bare lock pid"
+  pass "check lock-pid mismatch alert"
+}
+
+# Finding 1: commit revalidates; stale proposal refused when context drops.
+test_commit_revalidates_and_refuses_stale() {
+  local home q out incident gen rc=0
+  home=$(make_main_home reval)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-reval "$home/tx.jsonl"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource context" "setup: context proposal"
+  incident=${out##* }
+  incident=${incident%%$'\n'*}
+  gen=sess-reval
+  assert_present "$home/state/primary-resource/proposals/$incident.json"
+  jq -e '.evidence and .generation and .sourceBinding' \
+    "$home/state/primary-resource/proposals/$incident.json" >/dev/null \
+    || fail "proposal must persist evidence+generation+sourceBinding"
+  write_stow_ok "$home/stow.md" "$incident" "$gen"
+  # Drop context below threshold before commit.
+  write_claude_transcript "$home/tx.jsonl" 1000
+  printf 'claude\0--verbose\0old' > "$home/argv"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$home/argv" \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "commit must refuse when context no longer warrants action"
+  assert_absent "$home/state/primary-resource/receipts/$incident.json" \
+    "refused commit must not create a receipt"
+  pass "commit revalidates and refuses stale proposal"
+}
+
+test_commit_revalidation_rejects_invalid_quota_json() {
+  local home q invalid out incident rc=0
+  home=$(make_main_home invalid-revalidation-quota)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-invalid-revalidation-quota "$home/tx.jsonl"
+  q=$(quota_json claude 3 codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota" "setup: quota proposal"
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  write_stow_ok "$home/stow.md" "$incident" sess-invalid-revalidation-quota
+  invalid=$(printf '%s' "$q" | jq '.schemaVersion = 4')
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$invalid" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "invalid quota schema must refuse revalidation"
+  assert_absent "$home/state/primary-resource/receipts/$incident.json" \
+    "invalid quota schema must not create a receipt"
+
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKEBIN/codex"
+  chmod +x "$FAKEBIN/codex"
+  install_helper_tmux
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 \
+    || fail "valid quota schema must still commit"
+  assert_present "$home/state/primary-resource/receipts/$incident.json" \
+    "valid quota schema must create a receipt"
+  pass "commit revalidation rejects invalid quota json"
+}
+
+# Finding 2: structured attestation; negative prose rejected.
+test_stow_attestation_rejects_negative_prose() {
+  local home q out incident gen rc=0
+  home=$(make_main_home stowneg)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-stow "$home/tx.jsonl"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  gen=sess-stow
+  printf 'not reset-safe\nthis is NOT safe to reset\n' > "$home/bad.md"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/bad.md" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "substring 'not reset-safe' must not pass"
+  printf 'reset-safe: no\n' > "$home/bad2.md"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/bad2.md" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "reset-safe: no must not pass"
+  write_stow_ok "$home/ok.md" "$incident" "wrong-gen"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/ok.md" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "wrong generation must not pass"
+  write_stow_ok "$home/ok.md" "$incident" "$gen"
+  ln -sfn "$home/ok.md" "$home/link.md"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/link.md" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "symlink attestation must be rejected"
+  pass "stow attestation rejects negative/mismatched/symlink"
+}
+
+# Finding 5 + 10: argv admission through commit (not sed-extracted).
+test_argv_admission_via_commit_rejects_interpreters() {
+  local home q out incident gen rc=0 argv
+  home=$(make_main_home argvadm)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-argv "$home/tx.jsonl"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  gen=sess-argv
+  write_stow_ok "$home/stow.md" "$incident" "$gen"
+  argv="$home/argv"
+  printf 'node\0/opt/claude/cli.js\0--verbose\0old prompt' > "$argv"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET="fixture:agent" \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$argv" \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "node interpreter argv must be refused at commit"
+  printf 'claude\0--unknown-option\0old prompt' > "$argv"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET="fixture:agent" \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$argv" \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "unknown options must be refused at commit"
+  # Honest happy path through commit: argv[0]=claude keeps flags.
+  printf 'claude\0-c\0--dangerously-skip-permissions\0--verbose\0old prompt' > "$argv"
+  install_helper_tmux
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET="fixture:agent" \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$argv" \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 0 "$rc" "harness argv[0]=claude must commit"
+  assert_present "$home/state/primary-resource/receipts/$incident.json"
+  assert_grep '--dangerously-skip-permissions' \
+    "$home/$incident.cmd" \
+    "commit launch cmd must keep skip-permissions (launch-time snapshot)"
+  assert_grep '--verbose' "$home/$incident.cmd" \
+    "commit launch cmd must keep --verbose after -c (launch-time snapshot)"
+
+  home=$(make_main_home argvadm-codex)
+  write_codex_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" codex sess-argv-codex "$home/tx.jsonl"
+  q=$(quota_json codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  write_stow_ok "$home/stow.md" "$incident" sess-argv-codex
+  argv="$home/argv"
+  printf 'codex\0-c\0model_reasoning_effort="high"\0--dangerously-bypass-approvals-and-sandbox\0old prompt' > "$argv"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET="fixture:agent" \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$argv" \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 0 "$rc" "Codex bypass argv must commit"
+  assert_grep '--dangerously-bypass-approvals-and-sandbox' \
+    "$home/$incident.cmd" \
+    "Codex successor command must keep bypass flag (launch-time snapshot)"
+  pass "argv admission rejects interpreters and keeps spawned adapter flags"
+}
+
+# Authorized decision (1): a rendered display string is never an argv source.
+# ps output for a live `claude --append-system-prompt 'keep X Y'` flattens to
+# loose words, so reconstructing argv from it would relaunch the agent with
+# altered settings. With no /proc cmdline and no boundary-carrying source, the
+# check must fail closed: alert unparseable-launch-argv, keep the session, and
+# never propose the handover. The fake ps deliberately prints the dangerous
+# flattened string: trusting it is exactly the relapse this test pins out.
+test_argv_source_unavailable_fails_closed() {
+  local home q out
+  home=$(make_main_home argvsrc)
+  write_claude_transcript "$home/tx.jsonl" 175000
+  bind_home "$home" claude sess-argvsrc "$home/tx.jsonl"
+  # A pid no host can resolve (above every Linux pid_max, absent from /proc),
+  # with the session lock agreeing so the owner check passes.
+  jq -nc --arg h claude --argjson p 9999999 --arg s sess-argvsrc --arg t "$home/tx.jsonl" \
+    '{version:1, harness:$h, pid:$p, sessionId:$s, transcriptPath:$t, boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  printf '%s\n' 9999999 > "$home/state/.lock"
+  rm -f "$home/argv"
+  cat > "$FAKEBIN/ps" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'claude --append-system-prompt keep X Y'
+EOF
+  chmod +x "$FAKEBIN/ps"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_ARGV_FILE="$home/absent-argv" \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" \
+    run_pr "$home" check 2>&1 || true)
+  rm -f "$FAKEBIN/ps"
+  assert_contains "$out" "unparseable-launch-argv" \
+    "a host without an argv source must alert unparseable-launch-argv"
+  assert_contains "$out" "not context-handover-capable" \
+    "the alert must say the host is not handover-capable"
+  assert_contains "$out" "session kept" "the alert must keep the session open"
+  case "$out" in
+    *'primary-resource context '*) fail "a ps display string must never authorize a context handover" ;;
+  esac
+  if find "$home/state/primary-resource/proposals" -type f -print -quit 2>/dev/null | grep -q .; then
+    fail "fail-closed argv must not create a commit proposal"
+  fi
+  assert_present "$home/state/primary-resource/alerts/sess-argvsrc--unparseable-launch-argv" \
+    "the argv alert must be recorded once per generation"
+  out=$(FM_PRIMARY_RESOURCE_ARGV_FILE="$home/absent-argv" \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" \
+    run_pr "$home" check 2>&1 || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "argv alert exactly once"
+  pass "argv source unavailable fails closed as unparseable-launch-argv"
+}
+
+# Portable claim recovery: a quota commit that claimed both exhausted windows
+# but crashed before opening its episode marker must not propose a second
+# terminal handover for the already-claimed window, on any find(1) dialect.
+test_portable_claim_recovery_suppresses_second_handover() {
+  local home weekly_q out weekly_id
+  home=$(make_main_home claim-recovery)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-claim-recovery "$home/tx.jsonl"
+  weekly_q=$(jq -nc --argjson ea '[{"scope":"account","status":"known","effectivePercentRemaining":50,"runway":{"status":"through_reset"}}]' '
+    {schemaVersion:5, providers:[
+      {provider:"claude", state:{status:"ok", stale:false}, quotaSemantics:{status:"known", effectiveAvailability:$ea},
+       windows:[{id:"five_hour",kind:"session",resetsAt:"2026-09-11T20:00:00Z",percentRemaining:50},{id:"seven_day",kind:"weekly",resetsAt:"2026-09-18T00:00:00Z",percentRemaining:3}]},
+      {provider:"codex", state:{status:"ok", stale:false}, quotaSemantics:{status:"known", effectiveAvailability:$ea},
+       windows:[{id:"five_hour",kind:"session",resetsAt:"2026-09-11T20:00:00Z",percentRemaining:50},{id:"weekly",kind:"weekly",resetsAt:"2026-09-18T00:00:00Z",percentRemaining:50}]}
+    ]}')
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$weekly_q" FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota" "setup must identify the weekly incident"
+  weekly_id=${out##* }; weekly_id=${weekly_id%%$'\n'*}
+  mkdir -p "$home/state/primary-resource/claims"
+  printf 'primary=crashed-before-episode\n' > "$home/state/primary-resource/claims/$weekly_id"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$weekly_q" FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" \
+    "portable claim recovery must suppress the already-claimed weekly handover"
+  pass "portable quota claim recovery suppresses second handover"
+}
+
+# Authorized decision (3): when both triggers apply, quota handover wins even
+# with an unparseable launch argv - the quota path never consumes the captured
+# argv. The argv guard still preempts the CONTEXT handover, which relaunches
+# the same agent from that argv.
+test_quota_precedence_over_argv_guard() {
+  local home q out
+  home=$(make_main_home quota-argv)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-quota-argv "$home/tx.jsonl"
+  printf 'claude\0--unknown-option\0old prompt' > "$home/argv"
+  q=$(quota_json claude 3 codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$home/argv" \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota" \
+    "both triggers with unparseable argv must still decide quota"
+  case "$out" in
+    *unparseable-launch-argv*) fail "the argv guard must never preempt a quota handover" ;;
+  esac
+
+  home=$(make_main_home ctx-argv)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-ctx-argv "$home/tx.jsonl"
+  printf 'claude\0--unknown-option\0old prompt' > "$home/argv"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$home/argv" \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "unparseable-launch-argv" \
+    "context-only with unparseable argv must still alert"
+  case "$out" in
+    *'primary-resource context '*) fail "context handover must stay blocked behind the argv guard" ;;
+  esac
+  pass "quota wins over the argv guard; context stays guarded"
+}
+
+test_arm_requires_python3() {
+  local home rc=0 err
+  home=$(make_main_home armpy)
+  # Shadow python3 with a non-runnable stub ahead of PATH.
+  cat > "$FAKEBIN/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 127
+EOF
+  chmod +x "$FAKEBIN/python3"
+  rc=0
+  err=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    PATH="$FAKEBIN:$PATH" "$PR" arm 2>&1) || rc=$?
+  expect_code 1 "$rc" "arm must fail closed without a working python3"
+  assert_contains "$err" "python3 required" "arm must name python3"
+  rm -f "$FAKEBIN/python3"
+  pass "arm preflights python3"
+}
+
+# The generated shim interpolates the home and script paths; both must arrive
+# shell-quoted so a home containing a space and a single quote still yields a
+# shim that parses and resolves FM_HOME to the exact original path.
+test_arm_shim_quotes_tricky_home_paths() {
+  local home shim out rc=0
+  home=$(make_main_home "arm home's fixture")
+  shim="$home/state/primary-resource.check.sh"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    PATH="$FAKEBIN:$PATH" "$home/bin/fm-primary-resource.sh" arm 2>&1) || rc=$?
+  expect_code 0 "$rc" "arm must succeed for a home path with a space and a quote"
+  assert_present "$shim" "arm must write the check shim"
+  # Run the shim with every override scrubbed so its own exported FM_HOME is
+  # the sole authority; its exec line and parsing are exercised for real.
+  rc=0
+  out=$(env -u FM_HOME -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u STATE \
+    "$shim" 2>&1) || rc=$?
+  expect_code 0 "$rc" "the generated shim must parse and run for tricky paths"
+  assert_contains "$out" "primary-resource alert" \
+    "the shim must exec the resource check despite tricky paths"
+  assert_present "$home/state/primary-resource/alerts/unbound--context-unavailable" \
+    "shim must resolve FM_HOME to the exact original tricky path"
+  pass "arm shim stays correct for home paths with spaces and quotes"
+}
+
+test_helper_busy_then_idle_fake_backend() {
+  local home busyf incident reason
+  home=$(make_main_home busy-idle)
+  busyf="$home/busy-state"
+  printf 'busy\n' > "$busyf"
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+  jq -nc --argjson p "$$" \
+    '{version:1, harness:"codex", pid:$p, sessionId:"b", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  incident=busy-inc-1
+  jq -nc --arg id "$incident" --argjson spid "$$" --arg ssid "b" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", sourceProvider:"codex",
+      destinationHarness:"codex", destinationProvider:"codex", stowReceiptPath:"", reservedAt:1}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  ( sleep 1; printf 'idle\n' > "$busyf" ) &
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="fake:0" FM_SUPERVISOR_BACKEND=zellij \
+    FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$busyf" \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=5 \
+    "$PR" helper "$incident" >/dev/null 2>&1 || true
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true)
+  case "$reason" in
+    no-busy-signal) fail "helper must wait for busy->idle via fake busy file, got no-busy-signal" ;;
+    awaiting-turn-end) fail "helper stuck in awaiting-turn-end; busy flip did not clear" ;;
+  esac
+  [ -n "$reason" ] || fail "helper left no outcome reason"
+  pass "helper waits busy-then-idle via fake busy file (reason=$reason)"
+}
+
+test_helper_no_pgrep_fallback_records_failure() {
+  local home incident stage reason
+  home=$(make_main_home nopgrep)
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+  jq -nc '{version:1, harness:"codex", pid:999999001, sessionId:"np", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  incident=nopgrep-1
+  jq -nc --arg id "$incident" --argjson spid 999999001 --arg ssid "np" \
+    '{version:1, incidentId:$id, action:"quota", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", sourceProvider:"codex",
+      destinationHarness:"bash", destinationProvider:"codex", stowReceiptPath:"", reservedAt:1}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  printf 'echo successor\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  printf 'idle\n' > "$home/busy"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="fake:0" FM_SUPERVISOR_BACKEND=zellij \
+    FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=2 \
+    "$PR" helper "$incident" >/dev/null 2>&1 || true
+  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  assert_equals "failed" "$stage" "helper without a real pane must fail"
+  case "$reason" in
+    occupant-changed|pane-not-shell|old-pid-still-alive|herdr-alert-only|missing-supervisor-target|no-busy-signal) ;;
+    *) fail "unexpected failure reason: $reason" ;;
+  esac
+  pass "helper refuses host-wide pgrep started fallback (reason=$reason)"
+}
+
+# Finding 3: changed occupant is consumed failure with no exit text.
+test_helper_occupant_changed_no_exit() {
+  local home incident reason
+  home=$(make_main_home occ)
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+  # Dead/wrong pid: occupant cannot match.
+  jq -nc '{version:1, harness:"codex", pid:999999002, sessionId:"occ", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  incident=occ-1
+  jq -nc --arg id "$incident" --argjson spid 999999002 --arg ssid "occ" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", sourceProvider:"codex",
+      destinationHarness:"codex", destinationProvider:"codex", stowReceiptPath:"", reservedAt:1}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  printf 'idle\n' > "$home/busy"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="sess:win" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=2 \
+    "$PR" helper "$incident" >/dev/null 2>&1 || true
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  assert_equals "occupant-changed" "$reason" \
+    "changed/missing occupant must fail before exit text"
+  pass "helper occupant-changed is consumed failed attempt"
+}
+
+# Round-2 mandated regression: the exit target is the immutable receipt's
+# reserved source pid/session/harness. binding.json is refreshed by observe and
+# may already describe a successor that resumed the session; it can refuse the
+# handover but must never authorize the exit text.
+test_helper_exit_authority_is_receipt_not_binding() {
+  local home incident mode calls successor successor_pid reserved_pid stage reason
+  for mode in successor-pid successor-session harness-mismatch; do
+    home=$(make_main_home "exit-authority-$mode")
+    incident="exit-authority-$mode"
+    calls="$home/herdr-calls"
+    successor="$home/codex"
+    cp "$(command -v sleep)" "$successor"
+    "$successor" 30 &
+    successor_pid=$!
+    sleep 30 &
+    reserved_pid=$!
+    mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+      "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+    case "$mode" in
+      successor-pid)
+        jq -nc --argjson p "$successor_pid" \
+          '{version:1, harness:"codex", pid:$p, sessionId:"sess-a", transcriptPath:"/dev/null", boundAt:1}' \
+          > "$home/state/primary-resource/binding.json"
+        jq -nc --arg id "$incident" --argjson spid "$reserved_pid" --arg ssid "sess-a" \
+          '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+            sourceHarness:"codex", destinationHarness:"codex"}' \
+          > "$home/state/primary-resource/receipts/$incident.json"
+        ;;
+      successor-session)
+        jq -nc --argjson p "$successor_pid" \
+          '{version:1, harness:"codex", pid:$p, sessionId:"sess-b", transcriptPath:"/dev/null", boundAt:1}' \
+          > "$home/state/primary-resource/binding.json"
+        jq -nc --arg id "$incident" --argjson spid "$successor_pid" --arg ssid "sess-a" \
+          '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+            sourceHarness:"codex", destinationHarness:"codex"}' \
+          > "$home/state/primary-resource/receipts/$incident.json"
+        ;;
+      harness-mismatch)
+        jq -nc --argjson p "$successor_pid" \
+          '{version:1, harness:"codex", pid:$p, sessionId:"sess-a", transcriptPath:"/dev/null", boundAt:1}' \
+          > "$home/state/primary-resource/binding.json"
+        jq -nc --arg id "$incident" --argjson spid "$successor_pid" --arg ssid "sess-a" \
+          '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+            sourceHarness:"claude", destinationHarness:"claude"}' \
+          > "$home/state/primary-resource/receipts/$incident.json"
+        ;;
+    esac
+    jq -nc --arg id "$incident" \
+      '{version:1, incidentId:$id, stage:"waiting-idle", reason:"helper-launched",
+        helperEndpoint:"herdr:sess:helper:p1:workspace"}' \
+      > "$home/state/primary-resource/outcomes/$incident.json"
+    printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+    printf 'idle\n' > "$home/busy"
+    cat > "$FAKEBIN/herdr" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+case "\$*" in
+  *"pane process-info"*)
+    printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"p0","shell_pid":$$,"foreground_processes":[{"pid":$successor_pid,"name":"codex","argv0":"codex"}]}}}'
+    ;;
+  *) printf '%s\n' '{"result":{}}' ;;
+esac
+EOF
+    chmod +x "$FAKEBIN/herdr"
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+      FM_SUPERVISOR_TARGET="sess:p0" FM_SUPERVISOR_BACKEND=herdr \
+      FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+      FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=2 \
+      PATH="$FAKEBIN:$PATH" \
+      "$PR" helper "$incident" >/dev/null 2>&1 || true
+    kill "$successor_pid" "$reserved_pid" 2>/dev/null || true
+    wait "$successor_pid" 2>/dev/null || true
+    wait "$reserved_pid" 2>/dev/null || true
+    stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+    reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+    assert_equals "failed" "$stage" "$mode must be a consumed failed attempt"
+    case "$mode" in
+      successor-session)
+        assert_equals "source-session-changed" "$reason" \
+          "$mode must refuse on binding session mismatch"
+        ;;
+      *)
+        assert_equals "occupant-changed" "$reason" \
+          "$mode must refuse on occupant mismatch with the receipt source"
+        ;;
+    esac
+    if grep -qE 'pane (send-text|send-keys)' "$calls"; then
+      fail "$mode must not send exit text to a process that is not the reserved source"
+    fi
+    assert_grep 'pane close helper:p1' "$calls" "$mode must still close the recorded helper pane"
+    rm -f "$FAKEBIN/herdr"
+  done
+  pass "helper exit authority is the immutable receipt, not binding.json"
+}
+
+# Round-2 mandated regression: a terminal helper result whose outcome recording
+# fails must still close the recorded helper pane (exact recorded pane only).
+test_outcome_write_failure_still_closes_helper_pane() {
+  local home incident calls stage reason
+  home=$(make_main_home outcome-write-fail)
+  incident=owf-1
+  calls="$home/herdr-calls"
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+  jq -nc \
+    '{version:1, harness:"codex", pid:999999003, sessionId:"owf", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  jq -nc --arg id "$incident" --argjson spid 999999003 --arg ssid "owf" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", destinationHarness:"codex"}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"waiting-idle", reason:"helper-launched",
+      helperEndpoint:"herdr:sess:helper:p1:workspace"}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  printf 'idle\n' > "$home/busy"
+  cat > "$FAKEBIN/herdr" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+printf '%s\n' '{"result":{}}'
+EOF
+  chmod +x "$FAKEBIN/herdr"
+  chmod 0500 "$home/state/primary-resource/outcomes"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="sess:p0" FM_SUPERVISOR_BACKEND=herdr \
+    FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=2 \
+    PATH="$FAKEBIN:$PATH" \
+    "$PR" helper "$incident" >/dev/null 2>&1 || true
+  chmod 0700 "$home/state/primary-resource/outcomes"
+  rm -f "$FAKEBIN/herdr"
+  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  assert_equals "waiting-idle" "$stage" "outcome recording must have failed (file untouched)"
+  assert_equals "helper-launched" "$reason" "outcome recording must have failed (file untouched)"
+  assert_grep 'pane close helper:p1' "$calls" \
+    "failed outcome write must still close the recorded helper pane"
+  if grep -qE 'pane (send-text|send-keys)' "$calls"; then
+    fail "dead reserved pid must not receive exit text"
+  fi
+  pass "outcome write failure still closes the recorded helper pane"
+}
+
+# Round-3 regression: outcome writes are a serialized read-merge-write under the
+# resource lock. A live foreign holder (commit's critical section) must block
+# the helper's write, and the endpoint-carrying record that lands while the
+# helper waits must survive the helper's own writes through terminal cleanup.
+test_outcome_writers_serialize_under_resource_lock() {
+  local home incident calls holder holder_sh helper_pid i reason stage endpoint
+  home=$(make_main_home outcome-lock)
+  incident=olock-1
+  calls="$home/herdr-calls"
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+  jq -nc '{version:1, harness:"codex", pid:999999005, sessionId:"olock", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  jq -nc --arg id "$incident" --argjson spid 999999005 --arg ssid "olock" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", destinationHarness:"codex"}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"waiting-idle", reason:"reserved"}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  printf 'idle\n' > "$home/busy"
+  cat > "$FAKEBIN/herdr" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+printf '%s\n' '{"result":{}}'
+EOF
+  chmod +x "$FAKEBIN/herdr"
+  # A live foreign writer holds the resource lock, standing in for commit's
+  # critical section. It runs as a separate script that drives the real
+  # fm-wake-lib lock protocol in its own process.
+  holder_sh="$home/lock-holder.sh"
+  cat > "$holder_sh" <<'HOLDER'
+#!/usr/bin/env bash
+# <repo-root> <lock> <ready>: acquire the lock, mark readiness, hold, release.
+set -u
+root=$1 lock=$2 ready=$3
+. "$root/bin/fm-wake-lib.sh"
+fm_lock_acquire_wait "$lock" || exit 1
+printf 'held\n' > "$ready"
+sleep 8
+fm_lock_release "$lock" || true
+HOLDER
+  bash "$holder_sh" "$ROOT" "$home/state/primary-resource/.lock" \
+    "$home/lock-held" &
+  holder=$!
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -f "$home/lock-held" ]; do sleep 0.1; i=$((i + 1)); done
+  [ -f "$home/lock-held" ] || { kill "$holder" 2>/dev/null || true; fail "lock holder fixture failed to acquire"; }
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="sess:p0" FM_SUPERVISOR_BACKEND=herdr \
+    FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=2 FM_PRIMARY_RESOURCE_LOCK_SECS=25 \
+    PATH="$FAKEBIN:$PATH" \
+    "$PR" helper "$incident" >/dev/null 2>&1 &
+  helper_pid=$!
+  sleep 4
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  assert_equals "reserved" "$reason" \
+    "a helper outcome write must not land while another writer holds the resource lock"
+  # Commit's half of the race lands while the helper is blocked; the serialized
+  # helper must read it after, never clobber it.
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"waiting-idle", reason:"helper-launched",
+      helperEndpoint:"herdr:sess:helper:p1:workspace", updatedAt:2}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  wait "$holder" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 100 ] \
+    && [ "$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true)" != failed ]; do
+    sleep 0.2; i=$((i + 1))
+  done
+  wait "$helper_pid" 2>/dev/null || true
+  rm -f "$FAKEBIN/herdr"
+  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  endpoint=$(jq -r .helperEndpoint "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true)
+  assert_equals "failed" "$stage" "helper must complete its transaction after the lock frees"
+  assert_equals "occupant-changed" "$reason" "dead reserved pid must fail on the occupant proof"
+  assert_equals "herdr:sess:helper:p1:workspace" "$endpoint" \
+    "helper writes must preserve the endpoint another writer recorded"
+  assert_grep 'pane close helper:p1' "$calls" \
+    "terminal cleanup must still close the recorded helper pane"
+  pass "outcome writers serialize under the resource lock and keep the endpoint"
+}
+
+# Round-3 regression: terminal outcomes are final for staging - a late
+# nonterminal writer must not resurrect waiting-idle over a concrete failure.
+test_terminal_outcome_stage_not_resurrected() {
+  local home incident helper_pid i stage reason
+  home=$(make_main_home terminal-final)
+  incident=tfin-1
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+  jq -nc '{version:1, harness:"codex", pid:999999006, sessionId:"tfin", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  jq -nc --arg id "$incident" --argjson spid 999999006 --arg ssid "tfin" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", destinationHarness:"codex"}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"failed", reason:"occupant-changed", updatedAt:1}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  printf 'busy\n' > "$home/busy"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="sess:p0" FM_SUPERVISOR_BACKEND=herdr \
+    FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=30 \
+    "$PR" helper "$incident" >/dev/null 2>&1 &
+  helper_pid=$!
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -f "$home/state/primary-resource/helper-ready/$incident" ]; do
+    sleep 0.1; i=$((i + 1))
+  done
+  sleep 2
+  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  kill "$helper_pid" 2>/dev/null || true
+  wait "$helper_pid" 2>/dev/null || true
+  assert_equals "failed" "$stage" "nonterminal write must not resurrect a terminal outcome"
+  assert_equals "occupant-changed" "$reason" "terminal failure reason must survive a late writer"
+  pass "terminal outcome stage is final for late nonterminal writers"
+}
+
+test_incident_path_rejected_before_state_write() {
+  local home lock_hash err rc=0 incident=valid-incident
+  home=$(make_main_home incident-path)
+  printf 'lock must survive\n' > "$home/state/.lock"
+  lock_hash=$(shasum -a 256 "$home/state/.lock" | awk '{print $1}')
+
+  err=$(run_pr "$home" helper ../../.lock 2>&1) || rc=$?
+  expect_code 2 "$rc" "helper must reject traversal incident ids"
+  assert_contains "$err" "invalid incident id" "helper must explain traversal rejection"
+  assert_equals "$lock_hash" "$(shasum -a 256 "$home/state/.lock" | awk '{print $1}')" \
+    "helper traversal must leave the session lock byte-identical"
+
+  rc=0
+  err=$(run_pr "$home" commit ../../.lock --stow-receipt "$home/missing-stow" 2>&1) || rc=$?
+  expect_code 2 "$rc" "commit must reject traversal incident ids"
+  assert_contains "$err" "invalid incident id" "commit must explain traversal rejection"
+  assert_equals "$lock_hash" "$(shasum -a 256 "$home/state/.lock" | awk '{print $1}')" \
+    "commit traversal must leave the session lock byte-identical"
+
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch"
+  jq -nc --arg id "$incident" --argjson spid "$$" --arg ssid "valid" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", destinationHarness:"codex"}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --argjson p "$$" \
+    '{version:1, harness:"codex", pid:$p, sessionId:"valid", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  FM_SUPERVISOR_BACKEND=zellij FM_SUPERVISOR_TARGET="fixture:0" \
+    run_pr "$home" helper "$incident" >/dev/null 2>&1 || true
+  assert_present "$home/state/primary-resource/helper-ready/$incident" \
+    "valid helper incident must proceed through receipt validation"
+  pass "incident paths are rejected before state writes"
+}
+
+# Finding 4: stranded nonterminal outcome emits one alert; receipt preserved.
+test_reconcile_stranded_helper_alert() {
+  local home out incident
+  home=$(make_main_home strand)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-strand "$home/tx.jsonl"
+  incident=strand-1
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/outcomes" \
+    "$home/state/primary-resource/alerts"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, action:"context", sourceHarness:"claude", sourceProvider:"claude",
+      destinationHarness:"claude", destinationProvider:"claude", generation:"sess-strand",
+      stowReceiptPath:"", reservedAt:1}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  # Outcome updated far in the past; nonterminal.
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"exiting", reason:"sending-exit", updatedAt:1}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=99999 \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "handover stranded" "stale exiting outcome must alert"
+  assert_present "$home/state/primary-resource/receipts/$incident.json" \
+    "reconciliation must preserve the receipt"
+  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=99999 \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "stranded alert once"
+  pass "stranded helper reconciliation alerts once and keeps receipt"
+}
+
+# A terminal failed helper outcome written after commit already returned 0 is
+# read by nobody else; reconciliation must surface it once, receipt preserved.
+test_reconcile_failed_outcome_alert() {
+  local home out incident
+  home=$(make_main_home failalert)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-fa "$home/tx.jsonl"
+  incident=fa-1
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/outcomes" \
+    "$home/state/primary-resource/alerts"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, action:"context", sourceHarness:"claude", sourceProvider:"claude",
+      destinationHarness:"claude", destinationProvider:"claude", generation:"sess-fa",
+      stowReceiptPath:"", reservedAt:1}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"failed", reason:"successor-not-alive", updatedAt:1}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=99999 \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "handover failed (successor-not-alive)" \
+    "stale failed outcome must alert with its recorded reason"
+  assert_contains "$out" "no auto-retry" "failed-outcome alert must promise no retry"
+  assert_present "$home/state/primary-resource/receipts/$incident.json" \
+    "failed reconciliation must preserve the receipt"
+  assert_present "$home/state/primary-resource/alerts/sess-fa--failed-$incident" \
+    "failed-outcome alert must be recorded once per incident"
+  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=99999 \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "failed-outcome alert exactly once"
+  pass "terminal failed helper outcome alerts exactly once, no retry"
+}
+
+test_quota_axi_bounded_and_fresh() {
+  local home calls out started elapsed
+  home=$(make_main_home qbound)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-qb "$home/tx.jsonl"
+  calls="$home/quota-calls"
+  : > "$calls"
+  cat > "$FAKEBIN/quota-axi" <<EOF
+#!/usr/bin/env bash
+printf 'call\n' >> "$calls"
+cat <<'JSON'
+{"schemaVersion":5,"providers":[]}
+JSON
+EOF
+  chmod +x "$FAKEBIN/quota-axi"
+  out=$(FM_CHECK_TIMEOUT=30 \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 FM_SUPERVISOR_BACKEND=tmux \
+    PATH="$FAKEBIN:$PATH" "$PR" check 2>/dev/null || true)
+  FM_CHECK_TIMEOUT=30 \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 FM_SUPERVISOR_BACKEND=tmux \
+    PATH="$FAKEBIN:$PATH" "$PR" check >/dev/null 2>&1 || true
+  local n
+  n=$(wc -l < "$calls" | tr -d ' ')
+  [ "$n" -eq 2 ] || fail "quota-axi must re-read live quota (got $n calls)"
+  : > "$calls"
+  cat > "$FAKEBIN/quota-axi" <<'EOF'
+#!/usr/bin/env bash
+exec sleep 5
+echo '{}'
+EOF
+  chmod +x "$FAKEBIN/quota-axi"
+  started=$(date +%s)
+  FM_CHECK_TIMEOUT=8 FM_PRIMARY_RESOURCE_QUOTA_BUDGET_SECS=2 \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 FM_SUPERVISOR_BACKEND=tmux \
+    PATH="$FAKEBIN:$PATH" "$PR" check >/dev/null 2>&1 || true
+  elapsed=$(( $(date +%s) - started ))
+  # The claim is that the read is CUT at its budget, not that the whole check is
+  # fast. Measured on this host: ~2s of fixed per-check subprocess overhead plus
+  # the 2s bounded read, so the old "< 5" was marginal and flaked under load once
+  # the interval cache was removed and every check began paying the read. Assert
+  # against FM_CHECK_TIMEOUT (8 here) instead: comfortably below the watcher's
+  # kill, and still well under the 5s the stub would cost if the bound failed.
+  [ "$elapsed" -lt 8 ] || fail "quota-axi must honor the bounded budget (took ${elapsed}s)"
+  rm -f "$FAKEBIN/quota-axi"
+  pass "quota-axi bounded and always fresh"
+}
+
+test_reconcile_same_second_successor() {
+  local home out incident
+  home=$(make_main_home same-second)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude successor "$home/tx.jsonl"
+  incident=same-second-1
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/outcomes"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, action:"context", generation:"source", reservedAt:100}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"started", reason:"successor-alive", updatedAt:1}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_STARTED_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=100 \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  case "$out" in *'successor never became'*) fail "changed generation in the same second must not alert" ;; esac
+
+  bind_home "$home" claude source "$home/tx.jsonl"
+  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_STARTED_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_NOW=100 \
+    FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "successor never became" "unchanged generation must remain stranded"
+  pass "same-second successor binding reconciles by generation"
+}
+
+# The successor's first turn routinely runs minutes past the helper's started
+# write before its turn end advances the binding generation: that slow-but-
+# healthy turn must stay silent, while a genuinely stalled successor still
+# alerts exactly once once the stage-specific bound elapses.
+test_stalled_successor_alert_bound() {
+  local home out incident q
+  home=$(make_main_home stalled-bound)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude source "$home/tx.jsonl"
+  incident=stalled-bound-1
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/outcomes"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, action:"context", generation:"source", reservedAt:100}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"started", reason:"successor-alive", updatedAt:1}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_NOW=601 FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  case "$out" in
+    *'successor never became'*) fail "ten minutes past started must not alarm a slow first successor turn" ;;
+  esac
+  assert_absent "$home/state/primary-resource/alerts/source--stalled-successor-$incident" \
+    "slow first successor turn must not record a stalled alert"
+  out=$(FM_PRIMARY_RESOURCE_NOW=1802 FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_contains "$out" "successor never became" "genuinely stalled successor must alert once past the bound"
+  out=$(FM_PRIMARY_RESOURCE_NOW=1803 FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>&1 || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "stalled-successor alert exactly once"
+  pass "stalled-successor bound tolerates slow first turns, alerts real stalls once"
+}
+
+test_commit_endpoint_on_outcome_not_receipt() {
+  local home q out incident gen rc=0
+  home=$(make_main_home endpoint)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-ep "$home/tx.jsonl"
+  q=$(quota_json claude 3 codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota" "setup quota proposal"
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  gen=sess-ep
+  write_stow_ok "$home/stow.md" "$incident" "$gen"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$FAKEBIN/codex"
+  chmod +x "$FAKEBIN/codex"
+  install_helper_tmux
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 0 "$rc" "quota commit must launch its helper"
+  assert_present "$home/state/primary-resource/receipts/$incident.json"
+  if jq -e 'has("helperEndpoint")' "$home/state/primary-resource/receipts/$incident.json" >/dev/null; then
+    fail "immutable receipt must not carry helperEndpoint"
+  fi
+  pass "commit keeps helperEndpoint off the immutable receipt"
+}
+
+# Finding 6: custom route/gateway refuses independence claim.
+test_custom_route_gateway_refuses_quota_replacement() {
+  local home q out envf
+  home=$(make_main_home route)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-route "$home/tx.jsonl"
+  q=$(quota_json claude 3 codex 50)
+  envf="$home/environ"
+  printf 'ANTHROPIC_BASE_URL=https://gateway.example/v1\0' > "$envf"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_ROUTE_ENV_FILE="$envf" \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "alert" "custom gateway must alert rather than claim independence"
+  case "$out" in
+    *'primary-resource quota'*) fail "custom gateway must not propose quota handover" ;;
+  esac
+  pass "custom route/gateway refuses provider independence"
+}
+
+# Finding 8: later window does not mint a second terminal attempt.
+test_quota_episode_blocks_second_window() {
+  local home q out incident
+  home=$(make_main_home episode)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-ep2 "$home/tx.jsonl"
+  q=$(quota_json claude 3 codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota"
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  write_stow_ok "$home/stow.md" "$incident" "sess-ep2"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$FAKEBIN/codex"
+  chmod +x "$FAKEBIN/codex"
+  install_helper_tmux
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 \
+    || fail "first quota commit must succeed"
+  assert_present "$home/state/primary-resource/episodes/claude" "episode must open"
+  # Weekly also exhausted now; episode must suppress a second wake.
+  q=$(jq -nc --argjson ea '[{"scope":"account","status":"known","effectivePercentRemaining":50,"runway":{"status":"through_reset"}}]' '
+    {schemaVersion:5, providers:[
+      {provider:"claude", state:{status:"ok", stale:false},
+       quotaSemantics:{status:"known", effectiveAvailability:$ea},
+       windows:[
+         {id:"five_hour", kind:"session", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:3},
+         {id:"seven_day", kind:"weekly", resetsAt:"2026-09-18T00:00:00Z", percentRemaining:2}
+       ]},
+      {provider:"codex", state:{status:"ok", stale:false},
+       quotaSemantics:{status:"known", effectiveAvailability:$ea},
+       windows:[
+         {id:"five_hour", kind:"session", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:50},
+         {id:"weekly", kind:"weekly", resetsAt:"2026-09-18T00:00:00Z", percentRemaining:50}
+       ]}
+    ]}')
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" \
+    "active episode must suppress a second quota terminal wake"
+  pass "quota episode blocks second window terminal attempt"
+}
+
+# Round-3 regression: the episode sweep evaluates every provider marker against
+# the one fresh all-provider reading, so a provider a quota handover switched
+# away from still clears once it reads reliably below threshold again.
+test_episode_cleared_for_nonprimary_provider() {
+  local home q out
+  home=$(make_main_home episode-sweep)
+  write_codex_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" codex sess-sweep "$home/tx.jsonl"
+  mkdir -p "$home/state/primary-resource/episodes"
+  q=$(quota_json codex 50 claude 50)
+  printf 'incidentId=old\nopenedAt=1\n' > "$home/state/primary-resource/episodes/claude"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "below-threshold reading must stay silent"
+  assert_absent "$home/state/primary-resource/episodes/claude" \
+    "non-primary provider reading below threshold must clear its episode marker"
+
+  printf 'incidentId=old\nopenedAt=1\n' > "$home/state/primary-resource/episodes/claude"
+  q=$(quota_json codex 50 claude 3)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_present "$home/state/primary-resource/episodes/claude" \
+    "exhausted non-primary provider must keep its episode marker"
+
+  printf 'incidentId=old\nopenedAt=1\n' > "$home/state/primary-resource/episodes/claude"
+  q=$(quota_json codex 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_present "$home/state/primary-resource/episodes/claude" \
+    "provider missing from the reading must keep its episode marker"
+  pass "episode markers for non-primary providers clear from one all-provider reading"
+}
+
+test_ambiguous_resets_at_is_alert_only() {
+  local home q out
+  home=$(make_main_home ambreset)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-amb "$home/tx.jsonl"
+  q=$(jq -nc --argjson ea '[{"scope":"account","status":"known","effectivePercentRemaining":1,"runway":{"status":"through_reset"}}]' '
+    {schemaVersion:5, providers:[
+      {provider:"claude", state:{status:"ok", stale:false},
+       quotaSemantics:{status:"known", effectiveAvailability:$ea},
+       windows:[{id:"five_hour", kind:"session", resetsAt:"", percentRemaining:1}]}
+    ]}')
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "ambiguous" "missing resetsAt must alert"
+  case "$out" in
+    *'primary-resource quota'*) fail "ambiguous resetsAt must not propose quota handover" ;;
+  esac
+  pass "missing resetsAt is alert-only"
+}
+
+# Round-3 regression: an applicable SOURCE window whose percentRemaining is
+# non-numeric or out of range must read unknown/ambiguous and alert, never as
+# below-threshold, and must not strip the active episode marker.
+test_malformed_source_window_is_alert_only() {
+  local value home q out
+  for value in '"3"' '150'; do
+    home=$(make_main_home "malformed-source-$value")
+    write_claude_transcript "$home/tx.jsonl" 1000
+    bind_home "$home" claude "sess-msrc-$value" "$home/tx.jsonl"
+    mkdir -p "$home/state/primary-resource/episodes"
+    printf 'incidentId=old\nopenedAt=1\n' > "$home/state/primary-resource/episodes/claude"
+    q=$(jq -nc --argjson pr "$value" --argjson ea '[{"scope":"account","status":"known","effectivePercentRemaining":50,"runway":{"status":"through_reset"}}]' '
+      {schemaVersion:5, providers:[
+        {provider:"claude", state:{status:"ok", stale:false},
+         quotaSemantics:{status:"known", effectiveAvailability:$ea},
+         windows:[{id:"five_hour", kind:"session", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:$pr}]},
+        {provider:"codex", state:{status:"ok", stale:false},
+         quotaSemantics:{status:"known", effectiveAvailability:$ea},
+         windows:[{id:"five_hour", kind:"session", resetsAt:"2026-09-11T20:00:00Z", percentRemaining:50}]}
+      ]}')
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+      run_pr "$home" check 2>/dev/null || true)
+    assert_contains "$out" "malformed" "malformed source window ($value) must alert"
+    case "$out" in
+      *'primary-resource quota'*) fail "malformed source window ($value) must not read as below-threshold" ;;
+    esac
+    assert_present "$home/state/primary-resource/episodes/claude" \
+      "malformed reading ($value) must not clear the episode marker"
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+      run_pr "$home" check 2>/dev/null || true)
+    assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "malformed-window alert once ($value)"
+  done
+  pass "malformed source window alerts instead of reading not-exhausted"
+}
+
+test_same_provider_and_stale_destination() {
+  local home q out
+  home=$(make_main_home sameprov)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-sp "$home/tx.jsonl"
+  q=$(quota_json claude 3 claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "alert" "same-provider destination must alert"
+
+  home=$(make_main_home staleprov)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-stale "$home/tx.jsonl"
+  q=$(quota_json claude 3 codex 50 true)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "alert" "stale destination must alert"
+  pass "same-provider and stale destination rejected"
+}
+
+test_duplicate_incident_check_and_commit() {
+  local home q out incident gen rc=0
+  home=$(make_main_home dup)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-dup "$home/tx.jsonl"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource context" "context threshold must propose once"
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  gen=sess-dup
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  # Second check may re-print the same wake until receipt exists; allow either.
+  write_stow_ok "$home/stow.md" "$incident" "$gen"
+  printf 'claude\0--verbose\0old' > "$home/argv"
+  install_helper_tmux
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$home/argv" \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 \
+    || fail "first commit must succeed"
+  rc=0
+  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$home/argv" \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "duplicate commit must refuse"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "receipt suppresses further context wakes"
+  pass "duplicate incident suppressed at check and commit"
+}
+
+test_secondmate_noop() {
+  local home tx
+  home=$(make_secondmate_home mate)
+  tx="$home/tx.jsonl"
+  write_claude_transcript "$tx" 200000
+  printf '%s\n' "{\"session_id\":\"s\",\"transcript_path\":\"$tx\",\"harness\":\"claude\"}" \
+    | FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+      FM_PRIMARY_RESOURCE_FORCE_OWNER=1 "$PR" observe 2>/dev/null || true
+  assert_absent "$home/state/primary-resource/binding.json" "observe must no-op in a secondmate home"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$PR" arm 2>/dev/null || true
+  assert_absent "$home/state/primary-resource.check.sh" "arm must no-op in a secondmate home"
+  local out
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$PR" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "check must no-op in a secondmate home"
+  pass "secondmate home no-op"
+}
+
+test_unsupported_backend_alert() {
+  local home q out
+  home=$(make_main_home be)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-b "$home/tx.jsonl"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 \
+    FM_SUPERVISOR_BACKEND=zellij FM_SUPERVISOR_TARGET="z:0" \
+    PATH="$FAKEBIN:$PATH" \
+    "$PR" check 2>&1 || true)
+  assert_contains "$out" "alert" "unsupported backend must alert"
+  assert_contains "$out" "session kept" "unsupported backend keeps the session"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 \
+    FM_SUPERVISOR_BACKEND=zellij FM_SUPERVISOR_TARGET="z:0" \
+    PATH="$FAKEBIN:$PATH" \
+    "$PR" check 2>&1 || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "unsupported-backend alert once per generation"
+  pass "unsupported backend alert"
+}
+
+test_malformed_context_via_check() {
+  local home q out
+  home=$(make_main_home mal)
+  write_malformed_transcript "$home/tx.jsonl"
+  bind_home "$home" claude sess-m "$home/tx.jsonl"
+  q=$(quota_json claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "alert" "malformed context must alert"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_equals "" "$(printf '%s' "$out" | tr -d '\n')" "malformed context alert once per generation"
+  pass "malformed context alerts once"
+}
+
+# Captain decision 2026-09-12: Herdr is a first-class handover backend, not
+# alert-only. A Herdr primary must PROPOSE a handover at threshold, and the
+# helper must get its own non-focused workspace pane rather than the captain's.
+test_herdr_handover_lifecycle() {
+  local home q out calls
+  home=$(make_main_home herdrlifecycle)
+  write_claude_transcript "$home/tx.jsonl" 200000
+  bind_home "$home" claude sess-h "$home/tx.jsonl"
+  q=$(quota_json claude 50)
+  calls="$home/herdr-calls"
+  cat > "$FAKEBIN/herdr" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+case "\$*" in
+  *"workspace create"*)
+    printf '%s\n' '{"result":{"workspace":{"workspace_id":"wZ"},"root_pane":{"pane_id":"wZ:p1"}}}'
+    ;;
+  *"pane run"*) printf '%s\n' '{"result":{"type":"ok"}}' ;;
+  *) printf '%s\n' '{"result":{}}' ;;
+esac
+exit 0
+EOF
+  chmod +x "$FAKEBIN/herdr"
+  # Seed a reconstructable launch argv and point the capture seam at it, the
+  # same way the tmux handover cases do. Without it the probe falls through to
+  # this shell's own /proc cmdline, argv0 validation refuses, and the check
+  # correctly alerts instead of proposing.
+  printf 'claude\0--verbose\0old prompt' > "$home/argv"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_PRIMARY_RESOURCE_FORCE_OWNER=1 \
+    FM_PRIMARY_RESOURCE_ARGV_FILE="$home/argv" \
+    FM_SUPERVISOR_TARGET="sess:p0" FM_SUPERVISOR_BACKEND=herdr \
+    PATH="$FAKEBIN:$PATH" \
+    "$PR" check 2>&1 || true)
+  case "$out" in
+    *'primary-resource context '*|*'primary-resource quota '*) ;;
+    *) fail "Herdr must propose a handover at threshold, got: $out" ;;
+  esac
+  case "$out" in
+    *"alert-only"*|*"unverified"*)
+      fail "Herdr must no longer report itself as alert-only: $out"
+      ;;
+  esac
+  rm -f "$FAKEBIN/herdr"
+  pass "Herdr proposes a handover (no alert-only narrowing)"
+}
+
+test_herdr_helper_proves_occupant_and_closes_workspace() {
+  local home incident mode calls state agent agent_pid stage reason
+  for mode in unreadable wrong-pane wrong-pid; do
+    home=$(make_main_home "herdr-occupant-$mode")
+    incident="herdr-occupant-$mode"
+    calls="$home/herdr-calls"
+    state="$home/herdr-state"
+    mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+      "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready" "$state"
+    jq -nc --argjson p "$$" \
+      '{version:1, harness:"codex", pid:$p, sessionId:"herdr", transcriptPath:"/dev/null", boundAt:1}' \
+      > "$home/state/primary-resource/binding.json"
+    jq -nc --arg id "$incident" --argjson spid "$$" --arg ssid "herdr" \
+      '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+        sourceHarness:"codex", destinationHarness:"codex"}' \
+      > "$home/state/primary-resource/receipts/$incident.json"
+    jq -nc --arg id "$incident" \
+      '{version:1, incidentId:$id, stage:"waiting-idle", reason:"helper-launched", helperEndpoint:"herdr:sess:helper:p1:workspace"}' \
+      > "$home/state/primary-resource/outcomes/$incident.json"
+    printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+    printf 'idle\n' > "$home/busy"
+    cat > "$FAKEBIN/herdr" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+case "\$*" in
+  *"pane process-info"*)
+    case '$mode' in
+      unreadable) exit 1 ;;
+      wrong-pane) printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"other","shell_pid":$$,"foreground_processes":[{"pid":999999,"name":"codex","argv0":"codex"}]}}}' ;;
+      wrong-pid) printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"p0","shell_pid":$$,"foreground_processes":[{"pid":999999,"name":"codex","argv0":"codex"}]}}}' ;;
+    esac
+    ;;
+  *) printf '%s\n' '{"result":{}}' ;;
+esac
+EOF
+    chmod +x "$FAKEBIN/herdr"
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+      FM_SUPERVISOR_TARGET="sess:p0" FM_SUPERVISOR_BACKEND=herdr \
+      FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+      PATH="$FAKEBIN:$PATH" \
+      "$PR" helper "$incident" >/dev/null 2>&1 || true
+    stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+    reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+    assert_equals "failed" "$stage" "$mode Herdr proof must fail closed"
+    assert_equals "occupant-changed" "$reason" "$mode must not send exit text"
+    assert_grep 'pane close helper:p1' "$calls" "$mode must close the recorded helper pane"
+    if grep -qE 'pane (send-text|send-keys)' "$calls"; then
+      fail "$mode sent text despite an unproven occupant"
+    fi
+  done
+
+  home=$(make_main_home herdr-helper-success)
+  incident=herdr-helper-success
+  calls="$home/herdr-calls"
+  state="$home/herdr-state"
+  agent="codex"
+  sleep 30 &
+  agent_pid=$!
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready" "$state"
+  jq -nc --argjson p "$agent_pid" \
+    '{version:1, harness:"codex", pid:$p, sessionId:"herdr", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  jq -nc --arg id "$incident" --argjson spid "$agent_pid" --arg ssid "herdr" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", destinationHarness:"codex"}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"waiting-idle", reason:"helper-launched", helperEndpoint:"herdr:sess:helper:p1:workspace"}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  printf 'true\n' > "$home/state/primary-resource/launch/$incident.cmd"
+  printf 'codex\0--verbose\0old prompt' > "$home/state/primary-resource/launch/$incident.argv"
+  printf 'idle\n' > "$home/busy"
+  cat > "$FAKEBIN/herdr" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+if [[ "\$*" == *"pane process-info"* ]]; then
+  if [ -f '$state/launched' ]; then
+    printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"p0","shell_pid":$$,"foreground_processes":[{"pid":777777,"name":"codex","argv0":"codex"}]}}}'
+  elif [ -f '$state/exited' ]; then
+    printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"p0","shell_pid":$$,"foreground_processes":[]}}}'
+  else
+    printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"p0","shell_pid":$$,"foreground_processes":[{"pid":$agent_pid,"name":"codex","argv0":"$agent"}]}}}'
+  fi
+elif [[ "\$*" == *"status --json"* ]]; then
+  printf '%s\n' '{"server":{"running":true}}'
+elif [[ "\$*" == *"pane get"* ]]; then
+  printf '%s\n' '{"result":{"pane":{"pane_id":"p0"}}}'
+elif [[ "\$*" == *"agent get"* ]]; then
+  printf '%s\n' '{"result":{"agent":{"agent_status":"working"}}}'
+elif [[ "\$*" == *"pane send-text"* ]]; then
+  if [[ "\$*" == *'/quit'* ]]; then
+    kill '$agent_pid' 2>/dev/null || true
+    touch '$state/exited'
+  else
+    touch '$state/launched'
+  fi
+  printf '%s\n' '{"result":{}}'
+elif [[ "\$*" == *"pane close"* ]]; then
+  # Real Herdr pane close terminates the closed pane's whole process tree,
+  # including the helper running inside it; emulate that so any cleanup the
+  # helper schedules after its own pane close provably never runs.
+  chain=''
+  p=\$PPID
+  depth=0
+  while [ -n "\$p" ] && [ "\$p" -gt 1 ] && [ "\$depth" -lt 32 ]; do
+    if tr '\0' ' ' < "/proc/\$p/cmdline" 2>/dev/null | grep -q 'fm-primary-resource.sh helper'; then
+      chain="\$p \$chain"
+    fi
+    p=\$(awk '/^PPid:/{print \$2; exit}' "/proc/\$p/status" 2>/dev/null)
+    depth=\$((depth + 1))
+  done
+  [ -n "\$chain" ] && kill -TERM \$chain 2>/dev/null
+  printf '%s\n' '{"result":{}}'
+else
+  printf '%s\n' '{"result":{}}'
+fi
+EOF
+  chmod +x "$FAKEBIN/herdr"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="sess:p0" FM_SUPERVISOR_BACKEND=herdr \
+    FM_PRIMARY_RESOURCE_BUSY_STATE_FILE="$home/busy" \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=3 \
+    PATH="$FAKEBIN:$PATH" \
+    "$PR" helper "$incident" >/dev/null 2>&1 || true
+  wait "$agent_pid" 2>/dev/null || true
+  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  assert_equals "started" "$stage" "Herdr helper must record a live successor"
+  assert_equals "successor-alive" "$reason" "Herdr helper must complete its transaction"
+  assert_grep 'pane close helper:p1' "$calls" "successful helper must close the recorded helper pane"
+  assert_absent "$home/state/primary-resource/launch/$incident.cmd" \
+    "successful Herdr handover must not leak the launch cmd file (pane close kills the helper)"
+  assert_absent "$home/state/primary-resource/launch/$incident.argv" \
+    "successful Herdr handover must not leak the launch argv file (pane close kills the helper)"
+  pass "Herdr occupant proof, helper workspace cleanup, launch file cleanup"
+}
+
+# Finding 10: live tmux with classifier-recognized agent identity.
+test_live_tmux_helper_exit_shell_successor() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    printf 'ok - live tmux helper # SKIP tmux absent\n'
+    return 0
+  fi
+  local home sock session pane successor_marker fake_agent agent_pid real_tmux
+  home=$(make_main_home live)
+  sock="fmpr$$"
+  TRACK_TMUX_SOCKETS="$TRACK_TMUX_SOCKETS $sock"
+  session="fmpr-live"
+  successor_marker="$home/successor.launched"
+  real_tmux=$(command -v tmux)
+  # Copy bash to a harness-named binary so argv0/comm classify as an agent, and
+  # launch it as a CHILD of the pane shell (never exec-replace the shell).
+  fake_agent="$home/codex"
+  cp "$(command -v bash)" "$fake_agent"
+  chmod +x "$fake_agent"
+  # shellcheck disable=SC2016 # agent body is a literal -c string for the child shell
+  agent_body='trap "exit 0" TERM; while IFS= read -r line; do case "$line" in /quit|/exit) exit 0 ;; esac; done; while true; do sleep 1; done'
+  agent_cmd=$(printf '%q --noprofile --norc -c %q' "$fake_agent" "$agent_body")
+
+  tmux -L "$sock" new-session -d -s "$session" -n agent "bash --noprofile --norc"
+  pane=$(tmux -L "$sock" list-panes -t "$session:agent" -F '#{pane_id}' | head -n1)
+  tmux -L "$sock" send-keys -t "$pane" -l "$agent_cmd"
+  tmux -L "$sock" send-keys -t "$pane" Enter
+  sleep 0.8
+  local shell_pid
+  shell_pid=$(tmux -L "$sock" display-message -p -t "$pane" '#{pane_pid}')
+  agent_pid=$(pgrep -P "$shell_pid" -f "$fake_agent" | head -n1 || true)
+  [ -n "$agent_pid" ] || agent_pid=$(pgrep -P "$shell_pid" | head -n1 || true)
+  [ -n "$agent_pid" ] || fail "live tmux: codex-named agent child not found under shell pid $shell_pid"
+  # Prove classifier identity before exercising the helper.
+  local aname a0
+  aname=$(ps -p "$agent_pid" -o comm= 2>/dev/null || true)
+  a0=$(tr '\0' '\n' < "/proc/$agent_pid/cmdline" 2>/dev/null | head -n1 || true)
+  case "$aname$a0" in
+    *codex*) ;;
+    *) fail "live tmux: agent identity not classifier-visible (comm=$aname argv0=$a0)" ;;
+  esac
+
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/launch" \
+    "$home/state/primary-resource/outcomes" "$home/state/primary-resource/helper-ready"
+  jq -nc --argjson p "$agent_pid" \
+    '{version:1, harness:"codex", pid:$p, sessionId:"live", transcriptPath:"/dev/null", boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  local incident=live-inc-1
+  jq -nc --arg id "$incident" --argjson spid "$agent_pid" --arg ssid "live" \
+    '{version:1, incidentId:$id, action:"context", sourcePid:$spid, sourceSessionId:$ssid,
+      sourceHarness:"codex", sourceProvider:"codex",
+      destinationHarness:"codex", destinationProvider:"codex", generation:"live",
+      stowReceiptPath:"", reservedAt:1}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+
+  cat > "$FAKEBIN/codex" <<EOF
+#!/usr/bin/env bash
+touch "$successor_marker"
+exec -a codex sleep 3600
+EOF
+  chmod +x "$FAKEBIN/codex"
+  printf '%q\n' "$FAKEBIN/codex" > "$home/state/primary-resource/launch/$incident.cmd"
+
+  cat > "$FAKEBIN/tmux" <<EOF
+#!/usr/bin/env bash
+exec "$real_tmux" -L "$sock" "\$@"
+EOF
+  chmod +x "$FAKEBIN/tmux"
+
+  # Occupant must match the recognized agent before the helper sends exit.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SUPERVISOR_TARGET="$session:agent" FM_SUPERVISOR_BACKEND=tmux \
+    FM_PRIMARY_RESOURCE_HELPER_WAIT_SECS=15 \
+    PATH="$FAKEBIN:$PATH" \
+    "$PR" helper "$incident" >/dev/null 2>&1 || true
+
+  local i=0
+  while [ "$i" -lt 80 ]; do
+    [ -f "$successor_marker" ] && break
+    sleep 0.25
+    i=$((i + 1))
+  done
+  if [ ! -f "$successor_marker" ]; then
+    fail "live tmux: successor did not launch (outcome=$(cat "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true))"
+  fi
+  local stage reason
+  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  if [ "$stage" != started ]; then
+    fail "live tmux helper outcome must be started (got $stage/$reason)"
+  fi
+  pass "live isolated tmux helper exit->shell->successor"
+}
+
+# Finding 9: bootstrap emits PRIMARY_RESOURCE: (not MISSING:) when arm fails.
+test_bootstrap_arm_failure_diagnostic() {
+  local home out rc=0
+  home=$(make_main_home bootstrap-arm)
+  cat > "$FAKEBIN/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 127
+EOF
+  chmod +x "$FAKEBIN/python3"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_BOOTSTRAP_NETWORK=skip PATH="$FAKEBIN:$PATH" "$ROOT/bin/fm-bootstrap.sh" 2>&1) || rc=$?
+  rm -f "$FAKEBIN/python3"
+  expect_code 0 "$rc" "bootstrap arm failure must remain non-fatal"
+  assert_contains "$out" "PRIMARY_RESOURCE: not armed" \
+    "bootstrap must emit a PRIMARY_RESOURCE arm-failure diagnostic"
+  if printf '%s\n' "$out" | grep -qiE '^MISSING(_MANUAL)?: .*primary.?resource'; then
+    fail "arm failure must be reported as PRIMARY_RESOURCE, not MISSING: (got: $out)"
+  fi
+  pass "bootstrap arm failure diagnostic"
+}
+
+# --- run ----------------------------------------------------------------------
+
+test_check_context_thresholds
+test_quota_percent_filter_96_99
+test_unparseable_context_is_alert_only
+test_invalid_destination_quota_is_alert_only
+test_check_quota_wins_both
+test_quota_five_hour_schema_variants
+test_observe_wrong_session_and_non_owner
+test_observe_stdin_no_args_writes_binding
+test_unsupported_adapter_stays_alert_only
+test_check_lock_pid_mismatch_alert
+test_commit_revalidates_and_refuses_stale
+test_commit_revalidation_rejects_invalid_quota_json
+test_stow_attestation_rejects_negative_prose
+test_argv_admission_via_commit_rejects_interpreters
+test_argv_source_unavailable_fails_closed
+test_portable_claim_recovery_suppresses_second_handover
+test_quota_precedence_over_argv_guard
+test_arm_requires_python3
+test_arm_shim_quotes_tricky_home_paths
+test_helper_busy_then_idle_fake_backend
+test_helper_no_pgrep_fallback_records_failure
+test_helper_occupant_changed_no_exit
+test_helper_exit_authority_is_receipt_not_binding
+test_outcome_write_failure_still_closes_helper_pane
+test_outcome_writers_serialize_under_resource_lock
+test_terminal_outcome_stage_not_resurrected
+test_incident_path_rejected_before_state_write
+test_reconcile_stranded_helper_alert
+test_reconcile_failed_outcome_alert
+test_quota_axi_bounded_and_fresh
+test_reconcile_same_second_successor
+test_stalled_successor_alert_bound
+test_commit_endpoint_on_outcome_not_receipt
+test_custom_route_gateway_refuses_quota_replacement
+test_quota_episode_blocks_second_window
+test_episode_cleared_for_nonprimary_provider
+test_ambiguous_resets_at_is_alert_only
+test_malformed_source_window_is_alert_only
+test_same_provider_and_stale_destination
+test_duplicate_incident_check_and_commit
+test_secondmate_noop
+test_unsupported_backend_alert
+test_malformed_context_via_check
+test_herdr_handover_lifecycle
+test_herdr_helper_proves_occupant_and_closes_workspace
+test_live_tmux_helper_exit_shell_successor
+test_bootstrap_arm_failure_diagnostic
+
+printf 'All primary-resource tests passed.\n'
