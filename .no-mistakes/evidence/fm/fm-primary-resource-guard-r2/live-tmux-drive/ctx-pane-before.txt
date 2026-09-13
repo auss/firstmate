@@ -1,0 +1,24 @@
+bash-5.2$ /tmp/fmpr-live.ylRl5i/ctx/claude -c trap\ \"exit\ 0\"\ TERM\;\ while\
+IFS=\ read\ -r\ line\;\ do\ case\ \"\$line\"\ in\ /quit\|/exit\)\ exit\ 0\ \;\;\
+ esac\;\ done\;\ while\ true\;\ do\ sleep\ 1\;\ done
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

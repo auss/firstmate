@@ -1,0 +1,93 @@
+
+=== S1 context threshold 174999/175000 -> same-agent handover proposal ===
+check @174999 -> []
+PASS: 174999 stays below threshold (no output)
+check @175000 -> [primary-resource context ddaf9c6e82ff3cbf573bfea48fb32c7ec49b44ef55f2755a6081bc9f6df5049e]
+PASS: 175000 (inclusive) proposes a context handover
+PASS: proposal file persisted for incident ddaf9c6e82ff3cbf573bfea48fb32c7ec49b44ef55f2755a6081bc9f6df5049e
+PASS: proposal records a context (same-session) handover
+PASS: proposal evidence pins the 175000 reliable reading
+
+=== S2 quota 96.99/97 percent -> independent-provider handover proposal ===
+check @96.99% used -> []
+PASS: 96.99% used stays quiet
+check @97% used (5h window) -> [primary-resource quota 7507cd88c68fccc365fdd24dab79a44d2483a8b16210875e8133b76a8cea7ff2]
+PASS: 97% used (inclusive) proposes a quota handover
+PASS: proposal file persisted
+PASS: replacement is the INDEPENDENT provider (codex), not claude
+check @97% with no independent destination -> [primary-resource alert: quota-no-eligible-replacement; session kept]
+PASS: exhausted quota with no eligible independent destination alerts and keeps the session
+
+=== S3 both triggers + unparseable launch argv -> quota wins ===
+both triggers, argv unparseable -> [primary-resource quota 2ecc2bd7f2eff7446e42c0b744e402a8868e2eb7c3b36ec8d6e407ddfdda7f24]
+PASS: quota handover wins over the argv guard when both triggers apply
+PASS: no argv alert emitted alongside the quota decision
+
+=== S4 context-only trigger + unparseable argv -> fail-closed alert ===
+context-only, argv unparseable -> [primary-resource alert: unparseable-launch-argv: launch argv unreadable or ambiguous (needs /proc/<pid>/cmdline with explicit argument boundaries); this host is not context-handover-capable; hand over manually; session kept]
+PASS: alert names unparseable-launch-argv, says host not handover-capable, keeps session
+PASS: no context handover proposed
+PASS: no proposal file written
+repeat check (alert-once) -> []
+PASS: argv alert emitted exactly once per generation
+
+=== S5 adversarial: fake ps offers flattened argv; capture must refuse it ===
+no /proc source, hostile ps in PATH -> [primary-resource alert: unparseable-launch-argv: launch argv unreadable or ambiguous (needs /proc/<pid>/cmdline with explicit argument boundaries); this host is not context-handover-capable; hand over manually; session kept]
+PASS: fails closed as unparseable-launch-argv (session kept)
+PASS: ps display string NEVER authorizes a context handover
+PASS: no proposal written from ps output
+
+=== S6 uncertain context reading -> alert only, never closes ===
+malformed transcript -> [primary-resource alert: malformed-usage; session kept]
+PASS: malformed context reading alerts and keeps the session
+PASS: no terminal action proposed on an uncertain reading
+
+=== S7 one automatic action per incident (receipt before terminal action) ===
+check proposed [7152b48224f6e9681d1ae8610240c76456e41cc042e8235e06398293cb0da722]
+PASS: check proposed a context handover
+commit -> rc=0 out=[7152b48224f6e9681d1ae8610240c76456e41cc042e8235e06398293cb0da722]
+PASS: commit succeeded and echoed the incident
+PASS: immutable receipt persisted before terminal action
+PASS: receipt records incident, action, generation
+check after receipt -> []
+PASS: check never re-proposes a receipted incident
+second commit -> rc=1 out=[fm-primary-resource: receipt already exists for 7152b48224f6e9681d1ae8610240c76456e41cc042e8235e06398293cb0da722]
+PASS: second commit is refused
+PASS: refusal names the existing receipt
+outcome after failed helper attempt: {"version":1,"incidentId":"7152b48224f6e9681d1ae8610240c76456e41cc042e8235e06398293cb0da722","stage":"failed","reason":"no-busy-signal","updatedAt":1789290877,"helperEndpoint":"tmux:fm-pr-helper-1828674898-3107135-20272-1789290875"}
+PASS: receipt survives a failed handover attempt (no retry, no delete)
+
+=== S8 commit requires a structured stow attestation ===
+commit without --stow-receipt -> rc=2 [fm-primary-resource: commit: --stow-receipt required
+Usage:
+  fm-primary-resource.sh observe [--payload-file PATH | --payload JSON]
+  fm-primary-resource.sh arm
+  fm-primary-resource.sh check
+  fm-primary-resource.sh commit INCIDENT --stow-receipt PATH
+  fm-primary-resource.sh helper INCIDENT
+  fm-primary-resource.sh --help
+
+Main Firstmate session only. See the script header for the private state schema
+under state/primary-resource/, thresholds, and helper lifecycle.]
+PASS: missing stow receipt is a usage error
+commit with a mismatched attestation -> rc=1 [fm-primary-resource: stow attestation rejected (need FM_PRIMARY_RESOURCE_STOW_V1 bound to this incident)]
+PASS: attestation bound to another incident is rejected
+PASS: no receipt created on rejected attestation
+
+=== S9 claimed weekly window never proposes a second handover (portable enumeration) ===
+setup check -> [primary-resource quota 2a572a637d6c059c7dca236b61db68125bf285c2e3f53273336647db7968fe7a]
+PASS: weekly exhaustion first identifies the quota incident
+claimed weekly + healthy 5h, hostile find -> []
+PASS: already-claimed window proposes no second handover
+
+=== S10 main-session scope: secondmate home is a no-op ===
+secondmate check -> []
+PASS: secondmate home stays silent
+PASS: no proposals written in a secondmate home
+
+=== S11 unsupported supervisor backend -> alert only ===
+zellij backend -> [primary-resource alert: unsupported-backend; session kept]
+PASS: unsupported backend alerts and keeps the session
+PASS: no handover proposed on an unsupported backend
+
+=== manual drive summary: failures=0 ===

@@ -1,0 +1,36 @@
+occupant pid=3147231 comm=claude argv0=/tmp/fmpr-live.ylRl5i/ctx/claude
+
+=== L1 check with NO argv seam: capture must read the real /proc/<pid>/cmdline ===
+check (pure /proc) -> [primary-resource context 00d702976c0e13361891fe215ebae6da5783b83ca6fdfc93fe6df499165182f5]
+PASS: context handover proposed from the REAL /proc cmdline of the live claude occupant
+
+=== L2 full context lifecycle: commit -> real helper tmux session -> exit -> successor ===
+commit -> rc=0 [00d702976c0e13361891fe215ebae6da5783b83ca6fdfc93fe6df499165182f5]
+PASS: commit launched the helper and echoed the incident
+PASS: receipt: context handover to the SAME agent (claude)
+outcome: {"version":1,"incidentId":"00d702976c0e13361891fe215ebae6da5783b83ca6fdfc93fe6df499165182f5","stage":"started","reason":"successor-alive","updatedAt":1789290996,"helperEndpoint":"tmux:fm-pr-helper-4207191741-3149460-15788-1789290989"}
+PASS: helper completed the handover (stage=started reason=successor-alive)
+PASS: old occupant pid is gone after /exit delivery
+PASS: successor claude process is live in the pane (pid=3152476)
+PASS: terminal outcome removed the launch cmd file
+PASS: terminal outcome removed the launch argv file
+PASS: helper tmux session cleaned up (no fm-pr-helper-* session left)
+successor comm=claude
+
+=== L3 full quota lifecycle: independent provider, window claims, episode ===
+quota check -> [primary-resource quota 310005b9e2f44d861b745507324a3ddf4bc122f5a70839f838d46ae410ebcca8]
+PASS: 97% 5h window proposes a quota handover
+quota commit -> rc=0 [310005b9e2f44d861b745507324a3ddf4bc122f5a70839f838d46ae410ebcca8]
+PASS: quota commit launched the helper
+PASS: receipt: destination is the independent codex provider
+PASS: receipt claims the exhausted window(s) (windowClaims=1)
+PASS: provider episode marker opened (blocks a second attempt)
+PASS: successor launch command runs the codex destination binary
+quota outcome: {"version":1,"incidentId":"310005b9e2f44d861b745507324a3ddf4bc122f5a70839f838d46ae410ebcca8","stage":"started","reason":"successor-alive","updatedAt":1789291007,"helperEndpoint":"tmux:fm-pr-helper-4207191741-3155150-14258-1789291004"}
+PASS: quota helper completed (stage=started)
+PASS: old claude occupant exited
+PASS: codex successor is live in the pane (pid=3156974 comm=codex)
+post-handover check -> []
+PASS: episode marker suppresses a second automatic attempt
+
+=== live tmux drive summary: failures=0 ===
