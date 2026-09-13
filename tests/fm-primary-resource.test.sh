@@ -94,13 +94,19 @@ write_codex_transcript() {
 }
 
 # Recorded agy 1.2.x step shape: no token usage field exists. <bytes> of content
-# lets a fixture exceed any byte-based 175K-token estimate.
+# lets a fixture exceed any byte-based 175K-token estimate. The JSONL is
+# assembled by streaming, never through a jq --arg: a single exec argument is
+# capped by MAX_ARG_STRLEN (~128K), and passing the payload that way fails jq
+# with "Argument list too long" while leaving the file empty - which silently
+# turned the above-threshold case into a duplicate of the empty case.
 write_agy_transcript() {  # <path> <content-bytes>
   local path=$1 bytes=$2
   mkdir -p "$(dirname -- "$path")"
-  jq -nc --arg c "$(head -c "$bytes" /dev/zero | tr '\0' x)" \
-    '{step_index:0, source:"MODEL", type:"PLANNER_RESPONSE", status:"DONE", created_at:"2026-09-13T15:31:53Z", content:$c}' \
-    > "$path"
+  {
+    printf '%s' '{"step_index":0,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-13T15:31:53Z","content":"'
+    head -c "$bytes" /dev/zero | tr '\0' x
+    printf '%s\n' '"}'
+  } > "$path"
 }
 
 # Append a provider row: <quota-json> <provider> <percentRemaining> [stale] [semantics-status]
@@ -1961,6 +1967,111 @@ EOF
   pass "live isolated tmux helper exit->shell->successor"
 }
 
+# Live end-to-end agy quota handover: real isolated tmux server, an
+# agy-named agent child as the primary, a real quota proposal through check,
+# commit launching the real helper, and the helper exiting the agy agent and
+# starting the claude successor in the same pane. This is the live grade for
+# the agy source direction (busy read, /exit authority, occupant proof,
+# successor liveness); the claude->agy direction stays fixture-grade in
+# test_agy_quota_handover_both_directions.
+test_live_tmux_agy_quota_handover() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    printf 'ok - live tmux agy quota handover # SKIP tmux absent\n'
+    return 0
+  fi
+  local home sock session pane successor_marker fake_agent agent_pid real_tmux rc
+  local q out incident stage reason
+  home=$(make_main_home live-agy)
+  sock="fmpr-agy$$"
+  TRACK_TMUX_SOCKETS="$TRACK_TMUX_SOCKETS $sock"
+  session="fmpr-agy-live"
+  successor_marker="$home/successor.launched"
+  real_tmux=$(command -v tmux)
+  fake_agent="$home/agents/agy"
+  mkdir -p "$home/agents"
+  cp "$(command -v bash)" "$fake_agent"
+  chmod +x "$fake_agent"
+  # shellcheck disable=SC2016 # agent body is a literal -c string for the child shell
+  local agent_body agent_cmd
+  agent_body='echo agy-agent-ready; trap "exit 0" TERM; while IFS= read -r line; do case "$line" in /quit|/exit) exit 0 ;; esac; done; while true; do sleep 1; done'
+  agent_cmd=$(printf '%q --noprofile --norc -c %q' "$fake_agent" "$agent_body")
+
+  tmux -L "$sock" new-session -d -s "$session" -n agent "bash --noprofile --norc"
+  pane=$(tmux -L "$sock" list-panes -t "$session:agent" -F '#{pane_id}' | head -n1)
+  tmux -L "$sock" send-keys -t "$pane" -l "$agent_cmd"
+  tmux -L "$sock" send-keys -t "$pane" Enter
+  sleep 0.8
+  local shell_pid
+  shell_pid=$(tmux -L "$sock" display-message -p -t "$pane" '#{pane_pid}')
+  agent_pid=$(pgrep -P "$shell_pid" -f "$fake_agent" | head -n1 || true)
+  [ -n "$agent_pid" ] || agent_pid=$(pgrep -P "$shell_pid" | head -n1 || true)
+  [ -n "$agent_pid" ] || fail "live agy: agy-named agent child not found under shell pid $shell_pid"
+
+  write_agy_transcript "$home/data/antigravity/transcript.jsonl" 1000
+  mkdir -p "$home/state/primary-resource"
+  jq -nc --argjson p "$agent_pid" --arg t "$home/data/antigravity/transcript.jsonl" \
+    '{version:1, harness:"agy", pid:$p, sessionId:"sess-agy-live", transcriptPath:$t, boundAt:1}' \
+    > "$home/state/primary-resource/binding.json"
+  printf '%s\n' "$agent_pid" > "$home/state/.lock"
+
+  q=$(add_quota_provider "$(add_quota_provider "$QBASE" agy 2)" claude 50)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" check 2>/dev/null || true)
+  assert_contains "$out" "primary-resource quota" "exhausted agy primary must propose a live quota handover"
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  [ -n "$incident" ] || fail "live agy: no incident id in check output"
+
+  write_stow_ok "$home/stow.md" "$incident" sess-agy-live
+  cat > "$FAKEBIN/claude" <<EOF
+#!/usr/bin/env bash
+touch "$successor_marker"
+exec -a claude sleep 3600
+EOF
+  chmod +x "$FAKEBIN/claude"
+  cat > "$FAKEBIN/tmux" <<EOF
+#!/usr/bin/env bash
+exec "$real_tmux" -L "$sock" "\$@"
+EOF
+  chmod +x "$FAKEBIN/tmux"
+
+  rc=0
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
+    FM_SUPERVISOR_TARGET="$session:agent" \
+    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" 2>&1) || rc=$?
+  expect_code 0 "$rc" "live agy quota commit must succeed (got: $out)"
+
+  local i=0
+  while [ "$i" -lt 120 ]; do
+    [ -f "$successor_marker" ] && break
+    sleep 0.5
+    i=$((i + 1))
+  done
+  if [ ! -f "$successor_marker" ]; then
+    fail "live agy: successor did not launch (outcome=$(cat "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true))"
+  fi
+  # The helper polls successor liveness once per second; wait for its verdict.
+  i=0
+  while [ "$i" -lt 80 ]; do
+    stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true)
+    [ "$stage" = started ] && break
+    [ "$stage" = failed ] && break
+    sleep 0.5
+    i=$((i + 1))
+  done
+  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
+  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
+  if [ "$stage" != started ]; then
+    fail "live agy helper outcome must be started (got $stage/$reason)"
+  fi
+  assert_equals "agy/agy/claude/claude" \
+    "$(jq -r '"\(.sourceHarness)/\(.sourceProvider)/\(.destinationHarness)/\(.destinationProvider)"' \
+      "$home/state/primary-resource/receipts/$incident.json")" "live agy quota receipt"
+  if kill -0 "$agent_pid" 2>/dev/null; then
+    fail "live agy: old agy agent pid $agent_pid must be gone after handover"
+  fi
+  pass "live isolated tmux agy quota handover to claude"
+}
+
 # Finding 9: bootstrap emits PRIMARY_RESOURCE: (not MISSING:) when arm fails.
 test_bootstrap_arm_failure_diagnostic() {
   local home out rc=0
@@ -2033,6 +2144,7 @@ test_malformed_context_via_check
 test_herdr_handover_lifecycle
 test_herdr_helper_proves_occupant_and_closes_workspace
 test_live_tmux_helper_exit_shell_successor
+test_live_tmux_agy_quota_handover
 test_bootstrap_arm_failure_diagnostic
 
 printf 'All primary-resource tests passed.\n'
