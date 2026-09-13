@@ -1038,7 +1038,7 @@ wait_for_stub_calls() {  # <root> <count>
 }
 
 wait_for_file() {  # <path> <seconds>
-  local i waited=0 deadline=$(( $2 * 5 ))
+  local waited=0 deadline=$(( $2 * 5 ))
   while [ "$waited" -lt "$deadline" ]; do
     [ -s "$1" ] && return 0
     sleep 0.2
