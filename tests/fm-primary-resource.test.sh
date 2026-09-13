@@ -912,7 +912,7 @@ EOF
 # the helper's write, and the endpoint-carrying record that lands while the
 # helper waits must survive the helper's own writes through terminal cleanup.
 test_outcome_writers_serialize_under_resource_lock() {
-  local home incident calls holder helper_pid i reason stage endpoint
+  local home incident calls holder holder_sh helper_pid i reason stage endpoint
   home=$(make_main_home outcome-lock)
   incident=olock-1
   calls="$home/herdr-calls"
@@ -936,14 +936,22 @@ printf '%s\n' '{"result":{}}'
 EOF
   chmod +x "$FAKEBIN/herdr"
   # A live foreign writer holds the resource lock, standing in for commit's
-  # critical section.
-  (
-    . "$ROOT/bin/fm-wake-lib.sh"
-    fm_lock_acquire_wait "$home/state/primary-resource/.lock" || exit 1
-    printf 'held\n' > "$home/lock-held"
-    sleep 8
-    fm_lock_release "$home/state/primary-resource/.lock" || true
-  ) &
+  # critical section. It runs as a separate script that drives the real
+  # fm-wake-lib lock protocol in its own process.
+  holder_sh="$home/lock-holder.sh"
+  cat > "$holder_sh" <<'HOLDER'
+#!/usr/bin/env bash
+# <repo-root> <lock> <ready>: acquire the lock, mark readiness, hold, release.
+set -u
+root=$1 lock=$2 ready=$3
+. "$root/bin/fm-wake-lib.sh"
+fm_lock_acquire_wait "$lock" || exit 1
+printf 'held\n' > "$ready"
+sleep 8
+fm_lock_release "$lock" || true
+HOLDER
+  bash "$holder_sh" "$ROOT" "$home/state/primary-resource/.lock" \
+    "$home/lock-held" &
   holder=$!
   i=0
   while [ "$i" -lt 50 ] && [ ! -f "$home/lock-held" ]; do sleep 0.1; i=$((i + 1)); done
@@ -1814,9 +1822,9 @@ EOF
   expect_code 0 "$rc" "bootstrap arm failure must remain non-fatal"
   assert_contains "$out" "PRIMARY_RESOURCE: not armed" \
     "bootstrap must emit a PRIMARY_RESOURCE arm-failure diagnostic"
-  case "$out" in
-    MISSING:*) fail "emitted line must not be MISSING: (got: $out)" ;;
-  esac
+  if printf '%s\n' "$out" | grep -qiE '^MISSING(_MANUAL)?: .*primary.?resource'; then
+    fail "arm failure must be reported as PRIMARY_RESOURCE, not MISSING: (got: $out)"
+  fi
   pass "bootstrap arm failure diagnostic"
 }
 
