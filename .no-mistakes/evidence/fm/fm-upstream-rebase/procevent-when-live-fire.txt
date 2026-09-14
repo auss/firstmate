@@ -1,0 +1,17 @@
+== manual live drive: condition->action adapter, real processes, no fixtures ==
+$ FM_HOME=livehome bin/fm-procevent-when.sh arm live-fire --interval 0.2 --stable 1 --deadline 30 --condition cond.sh --action act.sh
+when-live-fire
+$ bin/fm-procevent.sh reconcile -> started=1
+$ cat effect (action side effect, fired exactly once):
+effect at 2026-09-14T13:38:39Z
+$ cat state/procevent-inbox/when-live-fire.1.result:
+when: when-live-fire
+status: fired
+detail: the condition held and the action exited 0
+condition_polls: 1
+action_exit: 0
+output:
+$ classify -> fired
+$ terminal -> rc0 (every when outcome is terminal)
+$ durable fired marker:
+when-live-fire.fired

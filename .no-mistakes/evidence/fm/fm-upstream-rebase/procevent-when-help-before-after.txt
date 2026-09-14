@@ -1,0 +1,24 @@
+== bin/fm-procevent-when.sh --help : pre-fix (6c93849, range '2,72p') last lines ==
+-- truncated mid-sentence in the run entry; Outcome-document block missing --
+           a restart or re-poll can never fire the action twice, runs the
+           action bounded, and emits exactly one outcome document on stdout
+           for durable capture. Every failure path - mutated spec, condition
+
+== target (ed01f60, range '2,88p') last lines ==
+-- run entry complete; Outcome-document block complete --
+           retrying silently, so firstmate is always woken with the evidence.
+
+Outcome document (the captured result named by the wake):
+  when: <source-id>
+  status: fired|action-failed|condition-error|never-true|ambiguous|rejected
+  detail: <one line>
+  condition_polls: <n>
+  action_exit: <code>        (fired and action-failed only)
+  output:
+  <bounded tail of the relevant command output>
+
+Ownership, durable capture, publication, restart recovery, and the handled
+acknowledgement all belong to bin/fm-procevent.sh; this adapter owns only the
+condition->action semantics above.
+
+line counts: pre-fix=75 target=87

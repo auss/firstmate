@@ -1,0 +1,1 @@
+ok - live Herdr lab handover: check->commit->helper->successor, default untouched
