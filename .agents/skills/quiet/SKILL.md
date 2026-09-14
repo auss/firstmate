@@ -25,12 +25,13 @@ exits it.
 
 1. **Enter the lifecycle through `bin/fm-afk-launch.sh`, exactly as `/afk`
    does, with `FM_AFK_MODE=quiet` set first.**
-   Follow the `afk` skill's "What it does" steps 1-3 verbatim (terminal-
-   backed vs harness-native entry, daemon-already-running refresh, never
-   arming a separate `fm-watch.sh`) with one addition: export
-   `FM_AFK_MODE=quiet` in the shell that invokes `bin/fm-afk-launch.sh start`
-   (or `start-native`), so `state/.afk`'s first line reads `quiet` instead of
-   `away`.
+   Follow the `afk` skill's "Entering: `/afk [words]`" steps 1-5 verbatim
+   (the record steps, terminal-backed vs harness-native entry,
+   daemon-already-running refresh, never arming a separate `fm-watch.sh`),
+   with two additions: step 3's entry announcement is replaced by the quiet
+   acknowledgment below, and `FM_AFK_MODE=quiet` must be exported in the
+   shell that invokes `bin/fm-afk-launch.sh start` (or `start-native`), so
+   `state/.afk`'s first line reads `quiet` instead of `away`.
    Leaving `FM_AFK_MODE` unset on a bare refresh of an already-running quiet
    daemon is also correct and does nothing wrong: `fm_afk_flag_write`
    preserves the on-disk mode when no explicit mode is given, so a plain
@@ -45,11 +46,12 @@ exits it.
 ## How to exit quiet mode
 
 Unlike `/afk`, ordinary chat is never the exit signal - that is the entire
-point of this mode (AGENTS.md section 8's away-mode stub, quiet branch).
+point of this mode (AGENTS.md section 8's away-mode and quiet-mode stub,
+quiet branch).
 
 - Only an explicit `/quiet off` (or the captain plainly asking to leave quiet
   mode / resume normal supervision) exits it: run `bin/fm-afk-return.sh`
-  unchanged, exactly the procedure `/afk`'s "How to exit afk" section
+  unchanged, exactly the procedure `/afk`'s "How to exit: the return" section
   documents for its own return path (correct-ordered daemon shutdown,
   durable wake presentation and acknowledgement, escalation/wedge evidence,
   and the return-catch-up gate).
