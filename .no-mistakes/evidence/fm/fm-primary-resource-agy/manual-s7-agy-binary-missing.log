@@ -1,0 +1,9 @@
+env: ‘command’: No such file or directory
+command -v agy inside this PATH: NONE
+check output: primary-resource quota f0393b78cd53ce1743c9cb88dab03edf3ffda72ac7206660ee1806e8cb8aa299
+incident: f0393b78cd53ce1743c9cb88dab03edf3ffda72ac7206660ee1806e8cb8aa299
+proposal destination: {"harness":"agy","provider":"agy"}
+commit exit: 1
+commit stderr/stdout: fm-primary-resource: agy binary missing
+receipt created? NO
+launch cmd written? NO

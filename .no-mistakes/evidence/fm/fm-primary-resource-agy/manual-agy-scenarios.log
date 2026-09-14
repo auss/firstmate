@@ -1,0 +1,40 @@
+
+=== SCENARIO S1: agy primary, healthy quota, real transcript -> alert-only context (agy-no-usage) ===
+check output: primary-resource alert: agy-no-usage; session kept
+proposals dir empty? YES
+second check output (alert-once): []
+missing-transcript check output: primary-resource alert: missing-binding; session kept
+
+=== SCENARIO S2: agy primary quota exhausted (2%% left) -> quota handover to claude, committed ===
+check output: primary-resource quota edd1485a8c0ac7f94c8f7b8fce5af5c6a02549846cd283fbe0e487ba68665814
+incident: edd1485a8c0ac7f94c8f7b8fce5af5c6a02549846cd283fbe0e487ba68665814
+stored proposal: {"action":"quota","replacement":{"eligible":true,"harness":"claude","provider":"claude","reason":""}}
+commit exit: 0
+receipt: {"sourceHarness":"agy","sourceProvider":"agy","destinationHarness":"claude","destinationProvider":"claude"}
+
+=== SCENARIO S3: claude exhausted, codex exhausted -> handover destination falls through to agy (--prompt-interactive) ===
+check output: primary-resource quota 90d5a325edf76961fcfec793e523dd50f19ac288e2bbbe3d1b35cc87e5cd52b2
+incident: 90d5a325edf76961fcfec793e523dd50f19ac288e2bbbe3d1b35cc87e5cd52b2
+stored proposal: {"action":"quota","replacement":{"eligible":true,"harness":"agy","provider":"agy","reason":""}}
+commit exit: 0
+receipt: {"sourceHarness":"claude","destinationHarness":"agy","destinationProvider":"agy"}
+successor launch cmd snapshot: /tmp/fmpr-agy-manual.UBqW4G/fakebin/agy --prompt-interactive This\ is\ a\ fresh\ main\ Firstmate\ session\ replacing\ the\ session\ recorded\ in\ receipt\ 90d5a325edf76961fcfec793e523dd50f19ac288e2bbbe3d1b35cc87e5cd52b2.\ Read\ AGENTS.md.\ Run\ bin/fm-session-start.sh\ exactly\ once\ unless\ its\ complete\ digest\ was\ already\ supplied.\ Verify\ lock\ ownership\,\ read\ the\ stow\ receipt\ and\ outstanding\ work\ through\ their\ existing\ owners\,\ then\ resume\ the\ emitted\ supervision\ protocol.\ Do\ not\ retry\ this\ incident\;\ its\ immutable\ receipt\ consumes\ the\ automatic\ action.\ Do\ not\ resume\ the\ previous\ vendor\ conversation.
+launch cmd contains --prompt-interactive? YES
+
+=== SCENARIO S4: claude exhausted, codex AND agy eligible -> codex stays preferred ===
+chosen replacement: {"harness":"codex","provider":"codex"}
+
+=== SCENARIO S5 (adversarial): agy quota exhausted but row marked stale -> alert-only, no handover ===
+check output: primary-resource alert: agy-no-usage; session kept
+proposals dir empty? YES
+
+=== SCENARIO S6 (adversarial): claude+codex exhausted, agy row unknown semantics -> no agy fallback ===
+check output: primary-resource alert: quota-no-eligible-replacement; session kept
+proposals dir empty? YES
+
+=== SCENARIO S7 (adversarial): commit an agy-destination proposal with no agy binary on PATH -> refusal ===
+237b9ac1a4b21b931363b3f92451697c7cf8f0f72019cf13ccaf84debb00858b
+commit exit with agy absent from PATH: 0
+receipt created despite refusal? YES
+
+=== ALL MANUAL SCENARIOS DRIVEN ===
