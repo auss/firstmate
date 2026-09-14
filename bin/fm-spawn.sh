@@ -3199,8 +3199,8 @@ rovo_endpoint_cleanup() {
 # backstop in the rovo/kimi launch-then-confirm shape: answer the dialog once
 # with the preselected safe default if it renders anyway, then require
 # positive proof that the brief is being processed - the same verdict the
-# supervisor reads (Herdr's native working state or the pinned `esc to cancel`
-# status row through fm_busy_classify) - before the spawn reports success.
+# supervisor reads (Herdr's native working state or the pinned busy status row
+# through fm_busy_classify) - before the spawn reports success.
 # The gate is strict about ordering because on Herdr the native working
 # verdict is known to coexist with an unanswered dialog: a busy verdict counts
 # only when the path was pre-registered or the dialog has been seen and

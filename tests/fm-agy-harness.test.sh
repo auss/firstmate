@@ -24,14 +24,20 @@
 #      cleanup when the brief cannot be confirmed to run in the worktree.
 #   5. agy is a crewmate/scout adapter only: a secondmate launch is refused,
 #      and nothing is armed as busy wiring because no writer could clear it.
-#   6. The busy signature is the pinned `esc to cancel` status row alone; the
-#      free-floating `Generating...` word must never read busy on its own.
+#   6. The busy signature is the pinned status row alone - `esc to cancel` on
+#      agy 1.2.0, the braille spinner verb rows (`⣷  Working...`) on 1.2.2 -
+#      and the free-floating verb word must never read busy on its own.
 #   7. Herdr's registry already tracks agy, and exit detection proves the
 #      agent at process level before trusting any registration (the shared
 #      post-#4115 contract in bin/backends/herdr.sh): a registered status plus
 #      a process view naming agy is live and refuses replacement, a registered
 #      status over a proven shell-only pane is the explicit stale-agent state,
 #      and nothing short of that shared proof flips an agy pane to agent-free.
+#   8. The composer verdict is identity-gated like Pi's: native agy identity
+#      at idle or done plus the verified footer row below the close rule
+#      proves `empty`/`pending`, the 1.2.2 mode placeholder is palette-colour-8
+#      de-emphasis that stays ghost, and anything short of that conjunction
+#      keeps the shell-like `>` `unknown` (the dead-shell rule).
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -161,26 +167,39 @@ test_agy_control_mechanics_are_the_verified_ones() {
 }
 
 test_agy_busy_tail_needs_the_pinned_status_row() {
-  printf 'working\nesc to cancel\n' | fm_busy_agy_tail_busy \
+  printf 'working
+esc to cancel\n' | fm_busy_agy_tail_busy \
     || fail "the esc-to-cancel status row must read busy"
+  printf 'working\n⣷  Working...\n' | fm_busy_agy_tail_busy \
+    || fail "the pinned 1.2.2 spinner Working row must read busy"
+  printf '⢿  Generating...\n' | fm_busy_agy_tail_busy \
+    || fail "the pinned 1.2.2 spinner Generating row must read busy"
+  printf '⣾  Loading...\n' | fm_busy_agy_tail_busy \
+    || fail "the pinned 1.2.2 spinner Loading row must read busy"
   printf 'working\n  Generating...\n' | fm_busy_agy_tail_busy \
     && fail "the free-floating Generating word alone must not read busy" || true
   printf 'Generating report...\ndone\n? for shortcuts\n>\n' | fm_busy_agy_tail_busy \
     && fail "echoed worker output naming Generating must not read busy" || true
   printf 'idle\n? for shortcuts\n>\n' | fm_busy_agy_tail_busy \
     && fail "an idle footer must not read busy" || true
+  printf '> Accept-edits mode: file edits auto-approved (shift+tab to cycle)\n>\n' | fm_busy_agy_tail_busy \
+    && fail "the settled 1.2.2 composer mode footer must not read busy" || true
   printf 'Generating report...\ndone\n? for shortcuts\n>\n' | fm_busy_lines_match agy \
     && fail "the delivery guard must not acknowledge on echoed Generating output" || true
   FM_BUSY_AGY_REGEX='idle' bash -c '. "$0/bin/fm-busy-lib.sh"; printf "idle\n" | fm_busy_agy_tail_busy' "$ROOT" \
     && fail "an environment override must not change the agy busy signature" || true
-  pass "fm-busy-lib: only the pinned esc-to-cancel row carries the agy busy verdict"
+  pass "fm-busy-lib: only a pinned busy status row carries the agy busy verdict"
 }
 
 test_agy_busy_signatures_are_harness_scoped() {
   printf 'esc to cancel\n' | fm_busy_lines_match agy \
     || fail "harness=agy must match its own esc token"
+  printf '⣷  Working...\n' | fm_busy_lines_match agy \
+    || fail "harness=agy must match its own spinner status row"
   printf 'esc to cancel\n' | fm_busy_lines_match grok \
     && fail "harness=grok must never borrow agy's esc token" || true
+  printf '⣷  Working...\n' | fm_busy_lines_match grok \
+    && fail "harness=grok must never borrow agy's spinner row" || true
   printf 'Ctrl+c:cancel\n' | fm_busy_lines_match agy \
     && fail "harness=agy must never borrow grok's token" || true
   printf 'esc to cancel\n' | fm_busy_lines_match kimi \
@@ -190,12 +209,108 @@ test_agy_busy_signatures_are_harness_scoped() {
   pass "fm-composer-lib: agy delivery signatures never cross harnesses"
 }
 
+test_agy_composer_requires_identity_container_and_footer() {
+  local caps=$'styled=1\nidentity=1'
+  local screen=$'────────────\n>\n────────────\n? for shortcuts    accept-edits · Gemini 3.8 Flash · low'
+  [ "$(fm_composer_classify_screen "$caps" "$screen" '' $'agy\tidle')" = empty ] \
+    || fail "an idle agy composer with its footer must prove empty"
+  [ "$(fm_composer_classify_screen "$caps" "${screen/>/> hello}" '' $'agy\tidle')" = pending ] \
+    || fail "typed agy input must stay pending"
+  [ "$(fm_composer_classify_screen "$caps" "$screen" '')" = need-identity ] \
+    || fail "an identity-capable backend must be asked to probe"
+  [ "$(fm_composer_classify_screen "$caps" "$screen" '' probe-absent)" = unknown ] \
+    || fail "a dead shell must never read empty"
+  [ "$(fm_composer_classify_screen "$caps" "$screen" '' $'agy\tblocked')" = unknown ] \
+    || fail "a blocked agy dialog must never read empty"
+  [ "$(fm_composer_classify_screen "$caps" "${screen/\? for shortcuts/Keyboard: esc Close}" '' $'agy\tidle')" = unknown ] \
+    || fail "a help dialog must never read empty"
+  [ "$(fm_composer_classify_screen "$caps" "${screen/────────────/missing border}" '' $'agy\tidle')" = unknown ] \
+    || fail "a missing input container must never read empty"
+  pass "fm-composer-lib: agy composer requires identity, container and footer together"
+}
+
+test_agy_palette_placeholder_stays_ghost_while_typed_input_stays_pending() {
+  local esc=$'\033'
+  local rule='──────────────────────────────────────────'
+  # Live 2026-09-10 shapes from a real spawn: the settled prompt-interactive
+  # composer keeps agy's palette-dim (38;5;8) mode placeholder in the input
+  # row, while typed input renders bold and drops the shortcuts hint from the
+  # footer.
+  local placeholder_row="${esc}[0m${esc}[38;5;12m>${esc}[0m ${esc}[0m${esc}[38;5;8mAccept-edits mode: file edits auto-approved (shift+tab to cycle)${esc}[0m"
+  local bold_typed_row="${esc}[0m${esc}[1m> hello${esc}[0m"
+  local foot_hint='? for shortcuts                accept-edits · Gemini 3.8 Flash · low'
+  local foot_typed='accept-edits · Gemini 3.8 Flash · low'
+  local placeholder_screen="$rule
+$placeholder_row
+$rule
+$foot_hint"
+  local typed_screen="$rule
+$bold_typed_row
+$rule
+$foot_typed"
+  local broken_foot plain_caps
+  local caps=$'styled=1\nidentity=1'
+  [ "$(fm_composer_classify_screen "$caps" "$placeholder_screen" '' $'agy\tidle')" = empty ] \
+    || fail "the palette-8 mode placeholder must not read as typed input"
+  [ "$(fm_composer_classify_screen "$caps" "$placeholder_screen" '' $'agy\tworking')" = unknown ] \
+    || fail "a working agy composer must never read empty"
+  [ "$(fm_composer_classify_screen "$caps" "$typed_screen" '' $'agy\tidle')" = pending ] \
+    || fail "bold typed input must stay pending"
+  [ "$(fm_composer_classify_screen "$caps" "$typed_screen" '' probe-absent)" = unknown ] \
+    || fail "typed input must not be accepted without identity"
+  broken_foot="${typed_screen/accept-edits · /accept-edits }"
+  [ "$(fm_composer_classify_screen "$caps" "$broken_foot" '' $'agy\tidle')" = unknown ] \
+    || fail "typed input must not be accepted without a footer"
+  plain_caps=$'styled=0\nidentity=1'
+  [ "$(fm_composer_classify_screen "$plain_caps" "$placeholder_screen" '' $'agy\tidle')" = unknown ] \
+    || fail "an unstyled placeholder must not be trusted without styling proof"
+  pass "fm-composer-lib: agy palette placeholder stays ghost while typed input stays pending"
+}
+
+test_agy_status_bar_footer_carries_both_idle_and_typed_verdicts() {
+  local esc=$'\033'
+  local rule='──────────────────────────────────────────'
+  # Live 2026-09-11 shapes from a real Antigravity CLI 1.2.1 spawn: the footer
+  # became a constant status bar (host:pwd | ctx: meter | quota windows |
+  # model) that no longer changes with typed input.
+  local bar_idle_row="${esc}[0m${esc}[38;5;12m>${esc}[0m"
+  local bar_typed_row="${esc}[0m${esc}[1m> hello${esc}[0m"
+  local foot_bar='marcin@ai-workspace:/tmp | ctx: 2% (21.1k/1M) | 5h: 5% (resets 15:24) · 7d: 20% | Gemini 3.8 Flash (High)'
+  local bar_idle_screen="$rule
+$bar_idle_row
+$rule
+$foot_bar"
+  local bar_typed_screen="$rule
+$bar_typed_row
+$rule
+$foot_bar"
+  local broken_bar broken_bar_screen
+  local caps=$'styled=1\nidentity=1'
+  [ "$(fm_composer_classify_screen "$caps" "$bar_idle_screen" '' $'agy\tidle')" = empty ] \
+    || fail "the 1.2.1 bar-footer idle composer must prove empty"
+  [ "$(fm_composer_classify_screen "$caps" "$bar_typed_screen" '' $'agy\tidle')" = pending ] \
+    || fail "1.2.1 bar-footer typed input must stay pending"
+  [ "$(fm_composer_classify_screen "$caps" "$bar_typed_screen" '' $'agy\tworking')" = unknown ] \
+    || fail "a working 1.2.1 bar-footer composer must never read empty"
+  broken_bar="${foot_bar/| ctx: /| ctxt: }"
+  broken_bar_screen="$rule
+$bar_idle_row
+$rule
+$broken_bar"
+  [ "$(fm_composer_classify_screen "$caps" "$broken_bar_screen" '' $'agy\tidle')" = unknown ] \
+    || fail "a bar footer without its ctx meter must never read empty"
+  pass "fm-composer-lib: agy 1.2.1 status-bar footer carries both idle and typed verdicts"
+}
+
 test_agy_classify_reports_unknown_when_the_marker_scrolls_out() {
   local statedir busy idle
   statedir="$TMP_ROOT/classify"; mkdir -p "$statedir"
   busy=$(fm_busy_classify tmux fake:win agy agy-case-1 "$statedir" 'turn running
 esc to cancel                                                           Gemini 3.8 Flash · low')
   [ "$busy" = "busy agy-regex" ] || fail "a busy tail must classify busy agy-regex, got '$busy'"
+  busy=$(fm_busy_classify tmux fake:win agy agy-case-3 "$statedir" 'essay text keeps streaming past the fold
+⣷  Working...')
+  [ "$busy" = "busy agy-regex" ] || fail "a 1.2.2 spinner tail must classify busy agy-regex, got '$busy'"
   idle=$(fm_busy_classify tmux fake:win agy agy-case-2 "$statedir" 'reply landed
 ? for shortcuts                                                         Gemini 3.8 Flash · low')
   [ "$idle" = "unknown agy-regex" ] || fail "a scrolled-out marker must classify unknown, got '$idle'"
@@ -836,13 +951,26 @@ test_agy_pre_trusted_path_that_never_turns_busy_fails_the_spawn() {
 }
 
 test_agy_missing_binary_refuses_before_pane_creation() {
-  local id rec out rc
+  local id rec out rc base_path
   id="agy-missing-z5-$$"
   rec=$(make_agy_spawn_case missing "$id")
   read_agy_spawn_record "$rec"
   rm "$FAKEBIN_DIR/agy"
+  # The carried node directory can also expose a real agy (this repo's own
+  # operator box keeps node and agy side by side in ~/.local/bin), and that
+  # install satisfies the PATH lookup this case must prove refuses. Narrow the
+  # base path to directories without an agy executable so the refusal stays
+  # hermetic on such hosts; CI node layouts expose no agy and are unchanged.
+  base_path=$BASE_PATH
+  BASE_PATH=$(printf '%s\n' "$base_path" | tr ':' '\n' | while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    [ -x "$dir/agy" ] && continue
+    printf '%s\n' "$dir"
+  done | paste -sd: -)
+  BASE_PATH=${BASE_PATH:-/usr/bin:/bin}
   rc=0
   out=$(run_agy_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  BASE_PATH=$base_path
   [ "$rc" -ne 0 ] || fail "a missing agy executable should refuse the spawn"
   assert_contains "$out" "agy executable not found on PATH" "missing agy diagnostic lacked its concrete reason"
   [ -s "$CASE_DIR/launch.log" ] && fail "a missing agy executable created a launch command" || true
@@ -890,6 +1018,9 @@ test_agy_claims_no_inherited_launcher_marker
 test_agy_control_mechanics_are_the_verified_ones
 test_agy_busy_tail_needs_the_pinned_status_row
 test_agy_busy_signatures_are_harness_scoped
+test_agy_composer_requires_identity_container_and_footer
+test_agy_palette_placeholder_stays_ghost_while_typed_input_stays_pending
+test_agy_status_bar_footer_carries_both_idle_and_typed_verdicts
 test_agy_classify_reports_unknown_when_the_marker_scrolls_out
 test_agy_tmux_names_the_native_binary_an_agent
 test_herdr_done_with_live_registry_stays_live
