@@ -22,9 +22,10 @@
 # closes the session on a context reading. Antigravity (agy) transcripts carry
 # no token counts, so agy context always reads unknown (agy-no-usage) and is
 # never estimated; agy takes part in quota handover as an independent provider
-# (source and destination), and a stale or unknown agy quota row stays
+# (destination only until primary binding and idle signals are verified),
+# and a stale or unknown agy quota row stays
 # alert-only. Quota destinations are tried in a fixed order per source:
-# claude -> codex, agy; codex -> claude, agy; agy -> claude, codex.
+# claude -> codex, agy; codex -> claude, agy. agy sources stay alert-only.
 # One automatic action per incident:
 # a receipt created no-clobber before any terminal action; check never
 # re-proposes an incident that already has a receipt; commit refuses one; failed
@@ -196,6 +197,8 @@ pr_lock_pid() {
 
 pr_primary_busy_state() {  # <backend> <target> <harness> -> busy|idle|unknown
   local backend=$1 target=$2 harness=$3 b
+  # agy has no verified primary turn-end binding or positive idle signal.
+  [ "$harness" != agy ] || { printf 'unknown\n'; return 0; }
   if [ -n "${FM_PRIMARY_RESOURCE_BUSY_STATE_FILE:-}" ] && [ -f "$FM_PRIMARY_RESOURCE_BUSY_STATE_FILE" ]; then
     tr -d '\n' < "$FM_PRIMARY_RESOURCE_BUSY_STATE_FILE"
     printf '\n'
@@ -756,7 +759,7 @@ pr_find_replacement() {  # <sourceHarness> <sourceProvider> <quota-json> [pid]
   case "$src_h" in
     claude) candidates="codex agy" ;;
     codex) candidates="claude agy" ;;
-    agy) candidates="claude codex" ;;
+    agy) printf '{"eligible":false,"harness":null,"provider":null,"reason":"agy-source-unverified"}'; return 0 ;;
     *) printf '{"eligible":false,"harness":null,"provider":null,"reason":"no-verified-template"}'; return 0 ;;
   esac
   for dest in $candidates; do
@@ -1536,6 +1539,13 @@ pr_commit_revalidate() {  # <incident> <expected-action> -> 0 if still warranted
     return 1
   fi
   [ "$fresh_id" = "$incident" ] || return 1
+  if [ "$expected" = quota ] && ! jq -e --argjson fresh "$decision" '
+    .replacement.harness == $fresh.replacement.harness and
+    .replacement.provider == $fresh.replacement.provider
+  ' "$PR_DIR/proposals/$incident.json" >/dev/null; then
+    PR_REVALIDATE_REASON='destination changed'
+    return 1
+  fi
   return 0
 }
 
@@ -1678,7 +1688,12 @@ action_commit() {
     # agy submits the prompt and keeps the session only through --prompt-interactive
     # (harness-adapters agy record).
     if [ "$dest_h" = agy ]; then
-      launch_cmd=$(printf '%q --prompt-interactive %q' "$bin" "$prompt")
+      if ! env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-agy-trust.sh" --primary-home "$FM_HOME"; then
+        pr_lock_release
+        printf 'fm-primary-resource: agy successor trust registration failed\n' >&2
+        return 1
+      fi
+      launch_cmd=$(printf 'cd -- %q && %q --prompt-interactive %q' "$FM_HOME" "$bin" "$prompt")
     else
       launch_cmd=$(printf '%q %q' "$bin" "$prompt")
     fi

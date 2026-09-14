@@ -11,8 +11,8 @@
 # recovery, stranded-helper reconciliation, route-gateway refusal, per-window
 # quota episodes (including non-primary marker clearing and malformed source
 # windows), Herdr handover guards, outcome-write serialization under the
-# resource lock, agy alert-only context and agy quota handover in both
-# directions (including stale/unknown agy rows), and a live isolated tmux
+# resource lock, agy alert-only context and agy destination-only quota handover
+# with trust registration (including stale/unknown agy rows), and a live isolated tmux
 # (-L private socket) exit->shell->successor path (skipped when tmux is absent).
 set -u
 
@@ -40,7 +40,7 @@ run_pr() {
     FM_SUPERVISOR_TARGET="${FM_SUPERVISOR_TARGET:-fixture:agent}" \
     FM_SUPERVISOR_BACKEND="${FM_SUPERVISOR_BACKEND:-tmux}" \
     FM_PRIMARY_RESOURCE_ARGV_FILE="${FM_PRIMARY_RESOURCE_ARGV_FILE:-$home/argv}" \
-    PATH="$FAKEBIN:$PATH" \
+    HOME="$TMP_ROOT/user-home" PATH="$FAKEBIN:$PATH" \
     "$PR" "$@"
 }
 
@@ -62,6 +62,7 @@ EOF
 
 make_main_home() {
   local name=$1 home
+  mkdir -p "$TMP_ROOT/user-home"
   home="$TMP_ROOT/$name"
   mkdir -p "$home/state" "$home/config" "$home/data"
   git -C "$home" init -q
@@ -339,9 +340,9 @@ test_unsupported_adapter_stays_alert_only() {
   local home tx out
   home=$(make_main_home pi-alert)
   tx="$home/tx.jsonl"
-  # bin/fm-harness.sh checks CLAUDECODE before PI_CODING_AGENT, so the marker of
-  # whatever harness runs this suite would otherwise decide the verdict. Clear
-  # every competing marker so the intended pi adapter is what gets detected.
+  # This marker fixture must not inherit the runner's stronger ancestry signal.
+  mkdir -p "$home/blind"
+  fm_fake_blind_ancestry "$home/blind"
   printf '%s\n' '{"stop_hook_active":false}' | env -u CLAUDECODE -u GROK_AGENT \
     -u FM_OMP_HARNESS -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_INVOKED_AS \
     -u ATLASSIAN_AGENT_TYPE -u ROVODEV_CLI PI_CODING_AGENT=true \
@@ -353,7 +354,7 @@ test_unsupported_adapter_stays_alert_only() {
   out=$(
     unset CLAUDECODE GROK_AGENT FM_OMP_HARNESS FM_PI_HARNESS GEMINI_CLI \
       CURSOR_INVOKED_AS ATLASSIAN_AGENT_TYPE ROVODEV_CLI
-    PI_CODING_AGENT=true FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" \
+    PATH="$home/blind:$PATH" PI_CODING_AGENT=true FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" \
       FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>&1 || true
   )
   assert_contains "$out" "adapter pi is alert-only" "unsupported adapter must explain its alert-only status"
@@ -1337,28 +1338,17 @@ test_agy_context_is_alert_only() {
   pass "agy context stays alert-only for below, above, empty, corrupt, and missing transcripts"
 }
 
-test_agy_quota_handover_both_directions() {
+test_agy_quota_destination_only() {
   local home q out incident rc
-  # agy source exhausted -> claude destination, committed through the helper.
+  # Even a manually supplied binding cannot enable an unverified agy source.
   home=$(make_main_home agy-to-claude)
   write_agy_transcript "$home/tx.jsonl" 1000
   bind_home "$home" agy sess-agy-src "$home/tx.jsonl"
   q=$(add_quota_provider "$(add_quota_provider "$QBASE" agy 2)" claude 50)
-  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
-    run_pr "$home" check 2>/dev/null || true)
-  assert_contains "$out" "primary-resource quota" "exhausted agy must propose quota handover"
-  incident=${out##* }; incident=${incident%%$'\n'*}
-  write_stow_ok "$home/stow.md" "$incident" sess-agy-src
-  printf '#!/usr/bin/env bash\necho ok\n' > "$FAKEBIN/claude"
-  chmod +x "$FAKEBIN/claude"
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" run_pr "$home" check 2>&1)
+  assert_contains "$out" "primary-resource alert" "agy source must stay alert-only"
+  assert_no_proposal "$home" "agy source cannot propose handover"
   install_helper_tmux
-  rc=0
-  FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
-    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" >/dev/null 2>&1 || rc=$?
-  expect_code 0 "$rc" "agy->claude quota commit must launch its helper"
-  assert_equals "agy/agy/claude/claude" \
-    "$(jq -r '"\(.sourceHarness)/\(.sourceProvider)/\(.destinationHarness)/\(.destinationProvider)"' \
-      "$home/state/primary-resource/receipts/$incident.json")" "agy->claude receipt"
 
   # claude source exhausted, codex also exhausted -> agy destination.
   home=$(make_main_home claude-to-agy)
@@ -1385,6 +1375,10 @@ test_agy_quota_handover_both_directions() {
   assert_contains "$(cat "$home/$incident.cmd" 2>/dev/null)" "--prompt-interactive" \
     "agy successor must keep an interactive session"
 
+  jq -e --arg home "$home" '.trustedWorkspaces | index($home) != null' \
+    "$TMP_ROOT/user-home/.gemini/antigravity-cli/settings.json" >/dev/null || fail "successor home not trusted"
+  assert_contains "$(cat "$home/$incident.cmd")" "cd -- $home" "successor must enter trusted home"
+
   # A codex preference still wins over agy when codex is eligible.
   home=$(make_main_home claude-prefers-codex)
   write_claude_transcript "$home/tx.jsonl" 1000
@@ -1393,7 +1387,7 @@ test_agy_quota_handover_both_directions() {
   FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check >/dev/null 2>&1 || true
   assert_equals "codex" "$(jq -r .replacement.harness "$home"/state/primary-resource/proposals/*.json)" \
     "codex stays the preferred claude destination"
-  pass "agy quota handover works as source and destination"
+  pass "agy quota handover is destination-only"
 }
 
 test_agy_stale_or_unknown_quota_is_alert_only() {
@@ -1967,25 +1961,18 @@ EOF
   pass "live isolated tmux helper exit->shell->successor"
 }
 
-# Live end-to-end agy quota handover: real isolated tmux server, an
-# agy-named agent child as the primary, a real quota proposal through check,
-# commit launching the real helper, and the helper exiting the agy agent and
-# starting the claude successor in the same pane. This is the live grade for
-# the agy source direction (busy read, /exit authority, occupant proof,
-# successor liveness); the claude->agy direction stays fixture-grade in
-# test_agy_quota_handover_both_directions.
-test_live_tmux_agy_quota_handover() {
+# A legacy agy-source receipt must not exit an unverified source on real tmux.
+test_live_tmux_agy_source_refused() {
   if ! command -v tmux >/dev/null 2>&1; then
     printf 'ok - live tmux agy quota handover # SKIP tmux absent\n'
     return 0
   fi
-  local home sock session pane successor_marker fake_agent agent_pid real_tmux rc
-  local q out incident stage reason
+  local home sock session pane fake_agent agent_pid real_tmux rc
+  local q out incident
   home=$(make_main_home live-agy)
   sock="fmpr-agy$$"
   TRACK_TMUX_SOCKETS="$TRACK_TMUX_SOCKETS $sock"
   session="fmpr-agy-live"
-  successor_marker="$home/successor.launched"
   real_tmux=$(command -v tmux)
   fake_agent="$home/agents/agy"
   mkdir -p "$home/agents"
@@ -2017,59 +2004,29 @@ test_live_tmux_agy_quota_handover() {
   q=$(add_quota_provider "$(add_quota_provider "$QBASE" agy 2)" claude 50)
   out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
     run_pr "$home" check 2>/dev/null || true)
-  assert_contains "$out" "primary-resource quota" "exhausted agy primary must propose a live quota handover"
-  incident=${out##* }; incident=${incident%%$'\n'*}
-  [ -n "$incident" ] || fail "live agy: no incident id in check output"
-
-  write_stow_ok "$home/stow.md" "$incident" sess-agy-live
-  cat > "$FAKEBIN/claude" <<EOF
-#!/usr/bin/env bash
-touch "$successor_marker"
-exec -a claude sleep 3600
-EOF
-  chmod +x "$FAKEBIN/claude"
+  assert_contains "$out" "primary-resource alert" "agy source must not propose handover"
+  assert_no_proposal "$home" "agy source must remain alert-only"
+  incident=legacy-agy
+  jq -nc --arg id "$incident" --argjson pid "$agent_pid" \
+    '{version:1, incidentId:$id, action:"quota", sourcePid:$pid, sourceSessionId:"sess-agy-live",
+      sourceHarness:"agy", sourceProvider:"agy",
+      destinationHarness:"claude", destinationProvider:"claude", stowReceiptPath:"", reservedAt:1}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  printf 'touch %q\n' "$home/successor.launched" > "$home/state/primary-resource/launch/$incident.cmd"
   cat > "$FAKEBIN/tmux" <<EOF
 #!/usr/bin/env bash
 exec "$real_tmux" -L "$sock" "\$@"
 EOF
   chmod +x "$FAKEBIN/tmux"
-
   rc=0
-  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" FM_SUPERVISOR_BACKEND=tmux \
-    FM_SUPERVISOR_TARGET="$session:agent" \
-    run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" 2>&1) || rc=$?
-  expect_code 0 "$rc" "live agy quota commit must succeed (got: $out)"
-
-  local i=0
-  while [ "$i" -lt 120 ]; do
-    [ -f "$successor_marker" ] && break
-    sleep 0.5
-    i=$((i + 1))
-  done
-  if [ ! -f "$successor_marker" ]; then
-    fail "live agy: successor did not launch (outcome=$(cat "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true))"
-  fi
-  # The helper polls successor liveness once per second; wait for its verdict.
-  i=0
-  while [ "$i" -lt 80 ]; do
-    stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json" 2>/dev/null || true)
-    [ "$stage" = started ] && break
-    [ "$stage" = failed ] && break
-    sleep 0.5
-    i=$((i + 1))
-  done
-  stage=$(jq -r .stage "$home/state/primary-resource/outcomes/$incident.json")
-  reason=$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")
-  if [ "$stage" != started ]; then
-    fail "live agy helper outcome must be started (got $stage/$reason)"
-  fi
-  assert_equals "agy/agy/claude/claude" \
-    "$(jq -r '"\(.sourceHarness)/\(.sourceProvider)/\(.destinationHarness)/\(.destinationProvider)"' \
-      "$home/state/primary-resource/receipts/$incident.json")" "live agy quota receipt"
-  if kill -0 "$agent_pid" 2>/dev/null; then
-    fail "live agy: old agy agent pid $agent_pid must be gone after handover"
-  fi
-  pass "live isolated tmux agy quota handover to claude"
+  FM_SUPERVISOR_TARGET="$session:agent" FM_SUPERVISOR_BACKEND=tmux \
+    run_pr "$home" helper "$incident" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "legacy agy helper must fail closed"
+  assert_equals "no-busy-signal" "$(jq -r .reason "$home/state/primary-resource/outcomes/$incident.json")" \
+    "unverified agy idle signal must refuse exit"
+  kill -0 "$agent_pid" || fail "agy source must remain alive"
+  assert_absent "$home/successor.launched" "helper must not launch successor"
+  pass "live isolated tmux agy source stays alive"
 }
 
 # Finding 9: bootstrap emits PRIMARY_RESOURCE: (not MISSING:) when arm fails.
@@ -2093,6 +2050,69 @@ EOF
   pass "bootstrap arm failure diagnostic"
 }
 
+test_quota_destination_drift_refused() {
+  local home q changed out incident rc variant
+  for variant in exhausted stale provider; do
+    home=$(make_main_home "destination-drift-$variant")
+    write_claude_transcript "$home/tx.jsonl" 1000
+    bind_home "$home" claude sess-drift "$home/tx.jsonl"
+    q=$(add_quota_provider "$(quota_json claude 2 codex 50)" agy 60)
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" run_pr "$home" check)
+    incident=${out##* }; incident=${incident%%$'\n'*}
+    write_stow_ok "$home/stow.md" "$incident" sess-drift
+    case "$variant" in
+      exhausted) changed=$(printf '%s' "$q" | jq '(.providers[] | select(.provider == "codex") | .windows[].percentRemaining) = 2') ;;
+      stale) changed=$(printf '%s' "$q" | jq '(.providers[] | select(.provider == "codex") | .state.stale) = true') ;;
+      provider)
+        changed=$q
+        jq '.replacement.provider = "agy"' "$home/state/primary-resource/proposals/$incident.json" > "$home/proposal"
+        mv "$home/proposal" "$home/state/primary-resource/proposals/$incident.json"
+        ;;
+    esac
+    rc=0
+    out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$changed" run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" 2>&1) || rc=$?
+    expect_code 1 "$rc" "$variant destination drift must refuse commit"
+    assert_contains "$out" "destination changed" "$variant drift refusal"
+    assert_absent "$home/state/primary-resource/receipts/$incident.json" "drift cannot consume attempt"
+  done
+  pass "quota commit rejects exhausted, stale, and provider-only destination drift"
+}
+
+test_agy_primary_trust_refusal() {
+  local home other store q out incident rc
+  home=$(make_main_home agy-trust-refusal)
+  other=$(make_main_home agy-trust-other)
+  store="$TMP_ROOT/user-home/.gemini/antigravity-cli/settings.json"
+  mkdir -p "$(dirname "$store")"
+  printf '%s\n' '{"trustedWorkspaces":[],"model":"keep-me"}' > "$store"
+  rc=0
+  HOME="$TMP_ROOT/user-home" FM_HOME="$other" "$ROOT/bin/fm-agy-trust.sh" --primary-home "$home" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "primary trust must match explicit FM_HOME"
+  jq -e '.trustedWorkspaces == [] and .model == "keep-me"' "$store" >/dev/null || fail "refusal changed settings"
+  HOME="$TMP_ROOT/user-home" FM_HOME="$home" "$ROOT/bin/fm-agy-trust.sh" --primary-home "$home" >/dev/null || fail "primary trust registration"
+  jq -e --arg home "$home" '.trustedWorkspaces == [$home] and .model == "keep-me"' "$store" >/dev/null || fail "trust did not preserve unrelated keys"
+  printf 'mate\n' > "$home/.fm-secondmate-home"
+  rc=0
+  HOME="$TMP_ROOT/user-home" FM_HOME="$home" "$ROOT/bin/fm-agy-trust.sh" --primary-home "$home" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "secondmate cannot use primary trust"
+  rm "$home/.fm-secondmate-home"
+  printf 'broken-json\n' > "$store"
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude sess-trust-refusal "$home/tx.jsonl"
+  q=$(add_quota_provider "$(quota_json claude 2 codex 1)" agy 60)
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" run_pr "$home" check)
+  incident=${out##* }; incident=${incident%%$'\n'*}
+  write_stow_ok "$home/stow.md" "$incident" sess-trust-refusal
+  rc=0
+  out=$(FM_PRIMARY_RESOURCE_QUOTA_JSON="$q" run_pr "$home" commit "$incident" --stow-receipt "$home/stow.md" 2>&1) || rc=$?
+  expect_code 1 "$rc" "broken trust store must refuse before closing source"
+  assert_contains "$out" "trust registration failed" "trust failure diagnostic"
+  assert_absent "$home/state/primary-resource/receipts/$incident.json" "trust failure cannot consume attempt"
+  assert_equals "broken-json" "$(cat "$store")" "broken settings preserved"
+  rm "$store"
+  pass "agy primary trust preserves settings and refuses mismatched, secondmate, and corrupt homes"
+}
+
 # --- run ----------------------------------------------------------------------
 
 test_check_context_thresholds
@@ -2106,6 +2126,7 @@ test_observe_stdin_no_args_writes_binding
 test_unsupported_adapter_stays_alert_only
 test_check_lock_pid_mismatch_alert
 test_commit_revalidates_and_refuses_stale
+test_quota_destination_drift_refused
 test_commit_revalidation_rejects_invalid_quota_json
 test_stow_attestation_rejects_negative_prose
 test_argv_admission_via_commit_rejects_interpreters
@@ -2130,7 +2151,8 @@ test_stalled_successor_alert_bound
 test_commit_endpoint_on_outcome_not_receipt
 test_custom_route_gateway_refuses_quota_replacement
 test_agy_context_is_alert_only
-test_agy_quota_handover_both_directions
+test_agy_quota_destination_only
+test_agy_primary_trust_refusal
 test_agy_stale_or_unknown_quota_is_alert_only
 test_quota_episode_blocks_second_window
 test_episode_cleared_for_nonprimary_provider
@@ -2144,7 +2166,7 @@ test_malformed_context_via_check
 test_herdr_handover_lifecycle
 test_herdr_helper_proves_occupant_and_closes_workspace
 test_live_tmux_helper_exit_shell_successor
-test_live_tmux_agy_quota_handover
+test_live_tmux_agy_source_refused
 test_bootstrap_arm_failure_diagnostic
 
 printf 'All primary-resource tests passed.\n'

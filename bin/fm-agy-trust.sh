@@ -5,6 +5,11 @@
 # dialog and running its turn in agy's own scratch directory.
 #
 # Usage: fm-agy-trust.sh <worktree> <project>
+#        fm-agy-trust.sh --primary-home <home>
+# Primary-home mode requires the explicit FM_HOME to match a plain Firstmate
+# checkout with AGENTS.md, bin/, and state/, never a secondmate or user home.
+# The primary resource commit gate calls it before reserving a handover.
+# Both modes preserve the same settings-store write safeguards.
 #   <worktree>  the isolated task worktree this spawn launches into
 #   <project>   the primary checkout that worktree belongs to
 # Prints one line naming what it registered; refuses loudly on anything else.
@@ -24,7 +29,7 @@
 # dialog if one renders anyway and never counts a busy turn as ready on a path
 # that was neither pre-registered here nor answered there.
 #
-# THE SCOPE TEST IS THE SAFETY PROPERTY and mirrors bin/fm-claude-trust.sh:
+# WORKTREE MODE scope mirrors bin/fm-claude-trust.sh:
 # <worktree> must be a LINKED git worktree - its own git dir, sharing
 # <project>'s common dir - whose top level is exactly the resolved argument. A
 # primary checkout, a worktree of an unrelated repo, a subdirectory of a
@@ -39,9 +44,16 @@ unset CDPATH \
   GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_CONFIG GIT_CONFIG_GLOBAL \
   GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT
 
-[ "$#" -eq 2 ] || { echo "usage: fm-agy-trust.sh <worktree> <project>" >&2; exit 2; }
-WT_ARG=$1
-PROJ_ARG=$2
+[ "$#" -eq 2 ] || { echo "usage: fm-agy-trust.sh <worktree> <project> | --primary-home <home>" >&2; exit 2; }
+MODE=worktree
+if [ "$1" = --primary-home ]; then
+  MODE=primary
+  WT_ARG=$2
+  PROJ_ARG=$2
+else
+  WT_ARG=$1
+  PROJ_ARG=$2
+fi
 
 refuse() { echo "error: refusing to pre-register agy trust: $1" >&2; exit 1; }
 
@@ -78,11 +90,21 @@ WT_GIT_DIR=$(real_dir "$WT_GIT_DIR") || true
 [ -n "$WT_GIT_DIR" ] || refuse "'$WT_REAL' has an unresolvable git directory"
 WT_COMMON=$(common_dir_of "$WT_REAL") || true
 [ -n "$WT_COMMON" ] || refuse "'$WT_REAL' has no resolvable git common directory"
-[ "$WT_GIT_DIR" != "$WT_COMMON" ] || refuse "'$WT_REAL' is a primary checkout, not an isolated worktree"
+if [ "$MODE" = primary ]; then
+  [ -n "${FM_HOME:-}" ] || refuse "primary mode requires explicit FM_HOME"
+  [ "$(real_dir "$FM_HOME")" = "$WT_REAL" ] || refuse "primary path differs from FM_HOME"
+  [ ! -e "$WT_REAL/.fm-secondmate-home" ] && [ ! -L "$WT_REAL/.fm-secondmate-home" ] \
+    || refuse "secondmate home is not a primary"
+  # shellcheck source=bin/fm-primary-scope-lib.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/fm-primary-scope-lib.sh"
+  fm_primary_scope_matches "$WT_REAL" "$WT_REAL/state" || refuse "not a primary Firstmate home"
+else
+  [ "$WT_GIT_DIR" != "$WT_COMMON" ] || refuse "'$WT_REAL' is a primary checkout, not an isolated worktree"
 
-PROJ_COMMON=$(common_dir_of "$PROJ_REAL") || true
-[ -n "$PROJ_COMMON" ] || refuse "project '$PROJ_REAL' is not inside a git repository"
-[ "$WT_COMMON" = "$PROJ_COMMON" ] || refuse "'$WT_REAL' is not a worktree of project '$PROJ_REAL'"
+  PROJ_COMMON=$(common_dir_of "$PROJ_REAL") || true
+  [ -n "$PROJ_COMMON" ] || refuse "project '$PROJ_REAL' is not inside a git repository"
+  [ "$WT_COMMON" = "$PROJ_COMMON" ] || refuse "'$WT_REAL' is not a worktree of project '$PROJ_REAL'"
+fi
 
 command -v node >/dev/null 2>&1 || refuse "node is required to record workspace trust and was not found on PATH"
 
