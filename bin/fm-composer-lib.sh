@@ -303,7 +303,8 @@ fm_composer_strip_ghost() {  # [palette-index]
 # Matching a footer to confirm a keystroke landed is a different question from
 # asking what a worker is doing, and the two must not be conflated.
 # Delivery-only rendered busy footers per harness. claude/codex: "esc to
-# interrupt"; opencode: "esc interrupt"; pi: "Working..."; omp: "Working…"; grok: "Ctrl+c:cancel".
+# interrupt"; opencode: "esc interrupt"; pi: "Working..."; omp: "Working…"; grok: "Ctrl+c:cancel"; agy: "esc to cancel" and its
+# 1.2.2 spinner status rows.
 # Claude's current spinner has a rotating glyph and word, but every active-turn
 # line has an ellipsis followed by a parenthesized elapsed duration. Keep this
 # signature separate from the shared default because that shape is not generic
@@ -324,7 +325,11 @@ fm_composer_strip_ghost() {  # [palette-index]
 # part of that union for the same reason the others are: without it a cursor
 # submit could never be acknowledged, because cursor parks its terminal cursor
 # outside its composer and the composer verdict is therefore always `unknown`.
-FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working(\.\.\.|…)|Ctrl\+c:cancel|ctrl\+c to stop'
+# agy's busy row tokens are part of the union for the same reason: an explicit
+# tmux agy endpoint reaches the submit core with no recorded harness, and its
+# bare `>` composer verdict is `unknown`, so the busy footer is the only
+# turn-started acknowledgement that path can read.
+FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working(\.\.\.|…)|Ctrl\+c:cancel|ctrl\+c to stop|esc[[:space:]]+to[[:space:]]+cancel|^[[:space:]]*(⣾|⣽|⣻|⢿|⡿|⣟|⣯|⣷)[[:space:]]+(Working|Generating|Loading)\.\.\.'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
@@ -355,6 +360,20 @@ FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT='Ctrl\+c:cancel'
 # injection. Cursor's recorded worker state comes from its transcript fold in
 # bin/fm-busy-lib.sh, never from this row.
 FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
+# agy (Antigravity CLI) renders a pinned status row while a turn runs. Two
+# vendor surfaces are verified live: agy 1.2.0 pinned `esc to cancel` on the
+# left with the model cell on the right (its idle row showed `? for
+# shortcuts` instead), and agy 1.2.2 pins a braille spinner frame plus verb
+# row - `⣷  Working...`, `⢿  Generating...`, `⣾  Loading...` - whose settled
+# idle row renders the composer mode footer (`> Accept-edits mode: ...`
+# with `(shift+tab to cycle)`) instead. The bare verb is a free-floating
+# output line on both surfaces and is deliberately not matched, so echoed
+# worker output cannot fake an acknowledgement; the anchored frame set is the
+# seven-frame status spinner as an explicit alternation (a bracket range over
+# the braille block is rejected by GNU grep, the omp lesson). Delivery guard
+# only; recorded worker state comes from the agy-regex fold in
+# bin/fm-busy-lib.sh.
+FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT='esc[[:space:]]+to[[:space:]]+cancel|^[[:space:]]*(⣾|⣽|⣻|⢿|⡿|⣟|⣯|⣷)[[:space:]]+(Working|Generating|Loading)\.\.\.'
 FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
 
 fm_busy_lines_match() {  # [harness]
@@ -370,6 +389,7 @@ fm_busy_lines_match() {  # [harness]
       pi|pi-signed) regex=$FM_DELIVERY_PI_BUSY_REGEX_DEFAULT ;;
       omp) regex=$FM_DELIVERY_OMP_BUSY_REGEX_DEFAULT ;;
       grok) regex=$FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT ;;
+      agy) regex=$FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT ;;
       kimi) regex=$FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT ;;
       cursor) regex=$FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT ;;
       '') regex=$FM_DELIVERY_BUSY_REGEX_DEFAULT ;;
