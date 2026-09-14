@@ -79,6 +79,9 @@
 # Residual limit: a successor that reaches a login/auth prompt still classifies
 # as a live agent; only the check-side reconciliation alert (started with no new
 # binding within the bound) surfaces that stalled handover. Never auto-retry.
+# An agy-destination successor raises no such alert: agy has no turn-end hook
+# to advance the binding generation, so a healthy and a stalled agy successor
+# are indistinguishable at this boundary.
 #
 # Stow attestation (exactly one shape; commit rejects all others):
 #   FM_PRIMARY_RESOURCE_STOW_V1
@@ -958,6 +961,8 @@ pr_reconcile_stranded() {
         [ "$age" -ge "$STARTED_RECONCILE_SECS" ] || continue
         local dest_h bind_gen
         dest_h=$(jq -r '.destinationHarness // empty' "$PR_DIR/receipts/$incident.json" 2>/dev/null || printf '')
+        # agy successors have no turn-end hook to advance the binding
+        # generation, so this alert could never clear for a healthy one.
         if [ "$dest_h" = agy ]; then
           continue
         fi
@@ -1623,6 +1628,8 @@ action_commit() {
 
   src_h=$(jq -r '.harness' "$PR_DIR/binding.json")
   src_p=$(pr_provider_for_harness "$src_h" 2>/dev/null || printf '')
+  # Use the revalidated destination, never the proposal file: a concurrent
+  # check rewrites proposals/<incident>.json without this lock.
   dest_h=$PR_REVALIDATE_DEST_H
   dest_p=$PR_REVALIDATE_DEST_P
   if [ "$action" = context ]; then

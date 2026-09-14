@@ -12,8 +12,10 @@
 # quota episodes (including non-primary marker clearing and malformed source
 # windows), Herdr handover guards, outcome-write serialization under the
 # resource lock, agy alert-only context and agy destination-only quota handover
-# with trust registration (including stale/unknown agy rows), and a live isolated tmux
-# (-L private socket) exit->shell->successor path (skipped when tmux is absent).
+# with trust registration (including stale/unknown agy rows and the silent
+# started-stage reconcile for agy successors), and live isolated tmux
+# (-L private socket) exit->shell->successor and refused-legacy-agy-source
+# paths (skipped when tmux is absent).
 set -u
 
 # shellcheck source=tests/lib.sh
