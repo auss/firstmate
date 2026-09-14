@@ -1275,6 +1275,33 @@ test_stalled_successor_alert_bound() {
   pass "stalled-successor bound tolerates slow first turns, alerts real stalls once"
 }
 
+test_reconcile_agy_destination_started_stays_silent() {
+  local home out incident
+  home=$(make_main_home agy-started)
+  write_claude_transcript "$home/tx.jsonl" 1000
+  bind_home "$home" claude agy-succ "$home/tx.jsonl"
+  incident=agy-started-1
+  mkdir -p "$home/state/primary-resource/receipts" "$home/state/primary-resource/outcomes" \
+    "$home/state/primary-resource/alerts"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, action:"quota", sourceHarness:"claude", sourceProvider:"claude",
+      destinationHarness:"agy", destinationProvider:"agy", generation:"agy-succ",
+      stowReceiptPath:"", reservedAt:1}' \
+    > "$home/state/primary-resource/receipts/$incident.json"
+  jq -nc --arg id "$incident" \
+    '{version:1, incidentId:$id, stage:"started", reason:"successor-alive", updatedAt:1}' \
+    > "$home/state/primary-resource/outcomes/$incident.json"
+  out=$(FM_PRIMARY_RESOURCE_RECONCILE_SECS=1 FM_PRIMARY_RESOURCE_STARTED_RECONCILE_SECS=1 \
+    FM_PRIMARY_RESOURCE_NOW=99999 FM_PRIMARY_RESOURCE_QUOTA_JSON="$(quota_json claude 50)" \
+    FM_SUPERVISOR_BACKEND=tmux run_pr "$home" check 2>&1 || true)
+  case "$out" in
+    *'successor never became'*) fail "agy-destination started receipt must not raise the stalled-successor alert" ;;
+  esac
+  assert_absent "$home/state/primary-resource/alerts/agy-succ--stalled-successor-$incident" \
+    "agy-destination started receipt must not record a stalled alert"
+  pass "agy-destination started receipt stays silent in reconciliation"
+}
+
 test_commit_endpoint_on_outcome_not_receipt() {
   local home q out incident gen rc=0
   home=$(make_main_home endpoint)
@@ -2148,6 +2175,7 @@ test_reconcile_failed_outcome_alert
 test_quota_axi_bounded_and_fresh
 test_reconcile_same_second_successor
 test_stalled_successor_alert_bound
+test_reconcile_agy_destination_started_stays_silent
 test_commit_endpoint_on_outcome_not_receipt
 test_custom_route_gateway_refuses_quota_replacement
 test_agy_context_is_alert_only

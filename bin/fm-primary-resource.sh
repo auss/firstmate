@@ -956,7 +956,11 @@ pr_reconcile_stranded() {
         # successor's first turn end is the only writer of that generation and
         # routinely runs minutes, so this stage waits out a longer bound.
         [ "$age" -ge "$STARTED_RECONCILE_SECS" ] || continue
-        local bind_gen
+        local dest_h bind_gen
+        dest_h=$(jq -r '.destinationHarness // empty' "$PR_DIR/receipts/$incident.json" 2>/dev/null || printf '')
+        if [ "$dest_h" = agy ]; then
+          continue
+        fi
         bind_gen=$(jq -r '.sessionId // "unknown"' "$PR_DIR/binding.json" 2>/dev/null || printf unknown)
         if [ "$bind_gen" = "$gen" ]; then
           pr_alert_once "$gen" "stalled-successor-$incident" \
@@ -1546,6 +1550,8 @@ pr_commit_revalidate() {  # <incident> <expected-action> -> 0 if still warranted
     PR_REVALIDATE_REASON='destination changed'
     return 1
   fi
+  PR_REVALIDATE_DEST_H=$(printf '%s' "$decision" | jq -r '.replacement.harness // empty')
+  PR_REVALIDATE_DEST_P=$(printf '%s' "$decision" | jq -r '.replacement.provider // empty')
   return 0
 }
 
@@ -1606,6 +1612,8 @@ action_commit() {
   # Under the resource lock: binding must still be the lock owner; re-read
   # evidence and refuse unless the same action remains warranted.
   PR_REVALIDATE_REASON=
+  PR_REVALIDATE_DEST_H=
+  PR_REVALIDATE_DEST_P=
   if ! pr_commit_revalidate "$incident" "$action"; then
     pr_lock_release
     printf 'fm-primary-resource: commit revalidation refused (%s)\n' \
@@ -1615,8 +1623,8 @@ action_commit() {
 
   src_h=$(jq -r '.harness' "$PR_DIR/binding.json")
   src_p=$(pr_provider_for_harness "$src_h" 2>/dev/null || printf '')
-  dest_h=$(jq -r '.replacement.harness // empty' "$proposal")
-  dest_p=$(jq -r '.replacement.provider // empty' "$proposal")
+  dest_h=$PR_REVALIDATE_DEST_H
+  dest_p=$PR_REVALIDATE_DEST_P
   if [ "$action" = context ]; then
     dest_h=$src_h
     dest_p=$src_p
