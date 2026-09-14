@@ -1,0 +1,10 @@
+== live fm-agy-trust --primary-home refusal drive 2026-09-14T21:02:18Z ==
+error: refusing to pre-register agy trust: primary path differs from FM_HOME
+mismatched-FM_HOME exit=1 (want 1)
+PASS refusal
+[]
+"keep-me"
+trusted: /tmp/fmpr-trust.vZiAn7/home-a
+PASS matching registration
+["/tmp/fmpr-trust.vZiAn7/home-a"]
+"keep-me"

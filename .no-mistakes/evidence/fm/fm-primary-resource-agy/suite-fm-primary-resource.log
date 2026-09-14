@@ -1,0 +1,61 @@
+FM_TEST_BEGIN 2026-09-14T21:02:22Z tests/fm-primary-resource.test.sh family=watcher-wake-lock expected_gate_skip=none
+ok - check context 174999/175000
+ok - check filters 96.99 vs 97 percent used
+ok - unparseable context argv is alert-only
+ok - invalid destination quota is alert-only
+ok - check quota wins over context
+ok - five-hour session and fixture shapes trigger at 97%
+ok - observe rejects wrong session and non-owner
+ok - observe stdin with no args writes binding
+ok - unsupported adapters alert only while codex remains eligible
+ok - check lock-pid mismatch alert
+ok - commit revalidates and refuses stale proposal
+ok - quota commit rejects exhausted, stale, and provider-only destination drift
+ok - commit revalidation rejects invalid quota json
+ok - stow attestation rejects negative/mismatched/symlink
+ok - argv admission rejects interpreters and keeps spawned adapter flags
+ok - argv source unavailable fails closed as unparseable-launch-argv
+ok - portable quota claim recovery suppresses second handover
+ok - quota wins over the argv guard; context stays guarded
+ok - arm preflights python3
+ok - arm shim stays correct for home paths with spaces and quotes
+ok - helper waits busy-then-idle via fake busy file (reason=occupant-changed)
+ok - helper refuses host-wide pgrep started fallback (reason=occupant-changed)
+ok - helper occupant-changed is consumed failed attempt
+ok - helper exit authority is the immutable receipt, not binding.json
+ok - outcome write failure still closes the recorded helper pane
+ok - outcome writers serialize under the resource lock and keep the endpoint
+ok - terminal outcome stage is final for late nonterminal writers
+ok - incident paths are rejected before state writes
+ok - stranded helper reconciliation alerts once and keeps receipt
+ok - terminal failed helper outcome alerts exactly once, no retry
+ok - quota-axi bounded and always fresh
+ok - same-second successor binding reconciles by generation
+ok - stalled-successor bound tolerates slow first turns, alerts real stalls once
+ok - agy-destination started receipt stays silent in reconciliation
+ok - commit keeps helperEndpoint off the immutable receipt
+ok - custom route/gateway refuses provider independence
+ok - agy context stays alert-only for below, above, empty, corrupt, and missing transcripts
+ok - agy quota handover is destination-only
+ok - agy primary trust preserves settings and refuses mismatched, secondmate, and corrupt homes
+ok - stale or unknown agy quota rows stay alert-only
+ok - quota episode blocks second window terminal attempt
+ok - episode markers for non-primary providers clear from one all-provider reading
+ok - missing resetsAt is alert-only
+ok - malformed source window alerts instead of reading not-exhausted
+ok - same-provider and stale destination rejected
+ok - duplicate incident suppressed at check and commit
+ok - secondmate home no-op
+ok - unsupported backend alert
+ok - malformed context alerts once
+ok - Herdr proposes a handover (no alert-only narrowing)
+Terminated
+ok - Herdr occupant proof, helper workspace cleanup, launch file cleanup
+ok - live isolated tmux helper exit->shell->successor
+ok - live isolated tmux agy source stays alive
+ok - bootstrap arm failure diagnostic
+All primary-resource tests passed.
+FM_TEST_END 2026-09-14T21:05:27Z tests/fm-primary-resource.test.sh exit=0 duration_ms=184879 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=185016
+FM_TEST_SUMMARY_FAMILY family=watcher-wake-lock count=1 duration_ms=184879 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-primary-resource.test.sh duration_ms=184879

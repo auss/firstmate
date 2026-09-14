@@ -1,0 +1,44 @@
+== live agy drive 2026-09-14T21:01:30Z ==
+ROOT=/home/marcin/.no-mistakes/worktrees/c7b2df826ee7/01M2GRX8SZAXVPQ76ZMT13EEXC
+TMP=/tmp/fmpr-agy-live.yTSUYQ
+tmux socket=fmpragylive2207730 session=fmagy-live
+PASS 01 live claude-named agent running (pid 2207837 under shell 2207822)
+PASS 02 agent identity is classifier-visible (comm=claude)
+PASS 03 observe bound the live claude session
+PASS 04 binding carries the live agent pid
+PASS 05 check proposes quota handover
+incident=1b0b05de3e04bebdf6db38d5229dbe29104468d11012b94933bdbf20b9250694
+PASS 06 proposal destination is agy
+trusted: /tmp/fmpr-agy-live.yTSUYQ/main
+1b0b05de3e04bebdf6db38d5229dbe29104468d11012b94933bdbf20b9250694
+PASS 07 commit exit 0 (trust + receipt + helper launch)
+PASS 08 agy trust registered the successor home
+PASS 09 trust preserved existing settings
+PASS 10 receipt destinationHarness is agy
+PASS 11 receipt source is the live claude session
+outcome after 2s: {"version":1,"incidentId":"1b0b05de3e04bebdf6db38d5229dbe29104468d11012b94933bdbf20b9250694","stage":"started","reason":"successor-alive","updatedAt":1789419697,"helperEndpoint":"tmux:fm-pr-helper-890644261-2208622-6761-1789419695"}
+PASS 12 helper reached stage=started (successor-alive)
+PASS 13 old claude agent exited
+PASS 14 successor launch keeps an interactive session (--prompt-interactive)
+PASS 15 successor launches from the trusted home (cd)
+PASS 16 pane shows the agy successor running
+PASS 17 pane shows the successor launch was typed into the shell
+PASS 18 drift home: check proposes quota handover
+PASS 19 drift home: proposal prefers codex
+PASS 20 drifted commit refused (exit 1)
+PASS 21 refusal names destination changed
+PASS 22 drift refusal created no receipt
+PASS 23 no stalled-successor alert for agy destination
+PASS 24 no stalled alert file recorded
+PASS 25 agy successor still running after reconcile
+PASS 26 agy source context alerts with the no-usage pin
+PASS 27 agy source must not propose handover
+PASS 28 agy source must not propose context handover
+PASS 29 exhausted agy source stays alert-only
+PASS 30 exhausted agy source must not propose handover
+PASS 31 agy source stored no proposal
+PASS 32 stale agy destination stays alert-only
+PASS 33 stale agy destination must not propose
+PASS 34 stale agy destination stored no proposal
+
+== DRIVE-RESULT: PASS (34 checks, 0 failures) ==
