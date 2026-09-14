@@ -1,0 +1,168 @@
+FM_TEST_BEGIN 2026-09-14T10:02:31Z tests/fm-composer-ghost.test.sh family=pure-contract-unit expected_gate_skip=none
+FM_TEST_BEGIN 2026-09-14T10:02:31Z tests/fm-composer-lib.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - fm_tmux_strip_ghost drops dim/faint runs, keeps normal and bold text
+ok - fm_tmux_strip_ghost handles combined SGR, ESC[22m, and reset-then-dim
+ok - fm_tmux_strip_ghost keeps bright colored text with 2 payloads
+ok - fm_tmux_strip_ghost drops a dark/muted truecolor foreground (grok placeholder)
+ok - fm_tmux_strip_ghost keeps muse's near-threshold glyph and its typed text
+ok - fm_pane_input_pending: a dim ghost-only composer is NOT pending
+ok - fm_pane_input_pending: dim ghost inside a bordered composer is NOT pending
+ok - fm_pane_input_pending: normal-intensity typed text is still pending
+ok - fm_pane_input_pending: bright colored text with 2 payloads is still pending
+ok - fm_pane_input_pending: a dark truecolor ghost-only composer (grok placeholder) is NOT pending
+ok - fm_tmux_composer_state: dark truecolor shell prompts read unknown
+ok - fm_pane_input_pending: real text plus a trailing ghost run is still pending
+ok - fm_tmux_composer_state: text above an empty cursor row is pending
+ok - fm_tmux_composer_state: a message wrapped across three rows is pending
+ok - fm_tmux_composer_state: a proven titled box tolerates a bottom-border cursor
+ok - fm_tmux_composer_identity: unknown busy state cannot become idle identity
+ok - fm_tmux_composer_state: typed Pi and Grok busy signatures inside a box are pending
+ok - fm_tmux_composer_state: a bare busy-footer row reads unknown (strict container-proof rule)
+ok - fm_tmux_composer_state: an unbounded bordered box fails closed as unknown
+ok - fm_tmux_composer_state: clipped and asymmetric composer edges fail closed
+ok - fm_tmux_composer_state: inconsistent box geometry fails closed
+ok - fm_tmux_composer_state: misaligned box bounds fail closed
+ok - fm_tmux_composer_state: unproved ghost and malformed geometry stay unknown while styled placeholder-like text stays pending-unproven
+ok - fm_tmux_composer_state: differing widths prefer pending or unknown, never empty
+ok - fm_tmux_composer_state: emoji and CJK text remain pending under the C locale
+ok - fm_tmux_composer_state: all tmux harnesses share empty and pending classification
+ok - fm_pane_input_pending: unrecognized states defer by default
+ok - fm_tmux_composer_state: one capture feeds the classifier; no band-capture race remains
+ok - fm_tmux_composer_state: absent Pi identity preserves Claude's enclosed bare verdict
+ok - fm_tmux_composer_state: only proven structural and non-bordered empty routes stay empty
+ok - fm_tmux_composer_state: panes without bordered structure retain compatibility fallback
+ok - fm_tmux_composer_state: interior edge glyphs retain non-bordered fallback
+ok - fm-peek output is escape-free (no raw -e bytes reach firstmate context)
+FM_TEST_END 2026-09-14T10:02:36Z tests/fm-composer-ghost.test.sh exit=0 duration_ms=4493 gate_skip=false
+ok - fm_composer_classify_content: a bare shell prompt glyph (>/$/%/#) reads unknown, never empty
+ok - fm_composer_classify_content: stripped unbordered content is unknown except verified agent glyphs
+ok - fm_composer_classify_content: a bare shell prompt carrying a command is not empty
+ok - fm_composer_classify_content: a bare prompt glyph inside a bordered composer box reads empty (claude's own idle composer)
+ok - fm_composer_classify_content: agent prompt glyphs (❯ claude, › codex, ⟩ muse) read empty bordered or bare
+ok - fm_composer_classify_content: an empty composer reads empty
+ok - fm_composer_classify_content: idle matching is limited to proven placeholder positions
+ok - fm_composer_classify_content: idle matching preserves the caller's case mode
+ok - fm_composer_classify_content: real unsubmitted text reads pending (including a popup argument-hint fill)
+ok - matrix: claude's ❯+NBSP row reads empty on every profile in both locales (#1988)
+ok - matrix: codex's dim hint is empty when styling proves it, unknown (never pending) when it cannot
+ok - matrix: muse's ⟩ reads empty everywhere and survives losing the styled-glyph signal
+ok - matrix: cursor's reverse-video placeholder remnant reads empty; real typed text stays pending
+ok - matrix: herdr half-block rules bound a bare composer's wrap region
+ok - matrix: omp's status row bounds the bare composer's wrap region
+ok - matrix: pi's separated composer needs identity + structure; the blank row alone never proves it
+ok - matrix: opencode's left-bar composer reads empty everywhere and scans the full active run
+ok - matrix: grok's titled bottom border is tolerated as a title, not read as ambiguity
+ok - matrix: kimi's bordered shell-glyph box reads empty through the shared owner (spawn's fourth copy retired)
+ok - matrix: the real claude-in-zellij --ansi dump reads empty in both locales
+ok - strict posture: blank and unidentified rows are unknown, never injectable empty
+ok - fm_composer_classify_screen: the bare composer's wrap region stays identified; structure breaks it
+ok - fm_composer_classify_screen: a row-leading agent glyph reanchors the live composer
+ok - fm_composer_classify_screen: a lower dead shell invalidates only cursorless stale composers
+ok - fm_composer_classify_screen: cursorless bare wrap regions participate in verdicts
+ok - fm_composer_classify_screen: cursorless containers reject only contiguous unclaimed activity
+ok - fm_composer_classify_screen: the bottom-most candidate wins; stale banners cannot
+ok - fm_composer_classify_screen: incomplete lower structure invalidates stale boxes
+ok - fm_composer_classify_screen: titled bottoms retain full box geometry
+ok - fm_composer_classify_screen: a proven box tolerates a bottom-border cursor
+ok - fm_composer_extract_selected_content: scopes user content and excludes furniture
+ok - fm_composer_queued_enter_verdict: pending + busy returns empty (queued Enter)
+ok - fm_composer_queued_enter_verdict: pending + idle/unknown stays pending
+ok - fm_composer_queued_enter_verdict: only proven pending is converted
+FM_TEST_END 2026-09-14T10:02:42Z tests/fm-composer-lib.test.sh exit=0 duration_ms=11067 gate_skip=false
+FM_TEST_BEGIN 2026-09-14T10:02:42Z tests/fm-agy-harness.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - fm-harness.sh: ancestry detects a natively-named agy command
+ok - fm-harness.sh: ancestry rejects unrelated agy mentions
+ok - fm-harness.sh: no inherited launcher marker claims the agy identity
+ok - fm-control-lib: agy mechanics are Escape once, no clear key, and /quit
+ok - fm-busy-lib: only a pinned busy status row carries the agy busy verdict
+ok - fm-composer-lib: agy delivery signatures never cross harnesses
+ok - fm-composer-lib: agy composer requires identity, container and footer together
+ok - fm-composer-lib: agy palette placeholder stays ghost while typed input stays pending
+ok - fm-composer-lib: agy 1.2.1 status-bar footer carries both idle and typed verdicts
+ok - fm-busy-lib: agy classifies busy on its marker and unknown without it
+ok - bin/fm-agent-process-lib.sh: agy is an agent, fragments are not
+ok - herdr exit detection: done with a live registry and an agy process view stays live and refuses replacement
+ok - herdr exit detection: a registered status over a shell-only pane is stale-agent and still refuses closing
+ok - herdr exit detection: a registered pane with an agy foreground stays live however its shell ranks
+ok - herdr exit detection: only a positively unregistered pane is agent-free
+ok - herdr exit detection: malformed and failed reads stay unknown
+ok - fm-spawn: agy launch carries brief, model, effort, and autonomy with cleared markers
+ok - fm-spawn: agy omits xhigh from the launch but records it in task metadata
+ok - fm-spawn: an unlisted agy model refuses before pane creation
+ok - fm-spawn: an unreachable agy listing establishes nothing and launches
+ok - fm-spawn: a hung agy listing is cut off by the shared bound and launches unvalidated
+ok - fm-spawn: a zero FM_AGY_MODELS_TIMEOUT is clamped to the default bound
+ok - fm-agy-trust.sh: registers the logical and resolved worktree paths and preserves the store
+ok - fm-agy-trust.sh: creates agy's settings store when none exists
+ok - fm-agy-trust.sh: refuses every out-of-scope path and never rewrites a broken store
+ok - fm-spawn: agy pre-registers the worktree and launches straight into a busy turn
+ok - fm-spawn: agy answers a dialog that renders anyway exactly once, then confirms busy
+ok - fm-spawn: on an unregistered path a premature busy verdict waits for the dialog to be answered
+ok - fm-spawn: a busy verdict on an unregistered path without a dialog fails and closes the endpoint
+ok - fm-spawn: an agy dialog that never turns busy fails the spawn and closes the endpoint
+ok - fm-spawn: a missing agy executable refuses before pane creation
+ok - fm-spawn: agy cannot be launched as a secondmate
+ok - fm-spawn: agy arms no busy wiring and writes no sidecar
+FM_TEST_END 2026-09-14T10:03:45Z tests/fm-agy-harness.test.sh exit=0 duration_ms=63207 gate_skip=false
+FM_TEST_BEGIN 2026-09-14T10:03:45Z tests/fm-quota-choose.test.sh family=standalone expected_gate_skip=none
+ok - help renders the complete header only
+ok - first positive candidate wins
+ok - exhausted provider is skipped
+ok - no positive candidate returns none and exit 1
+ok - positional candidates work
+ok - specific model scope bounds generic quota
+ok - omp openai-codex prefix matches the bare codex model scope
+ok - omp without a mapped prefix fails closed
+ok - default model uses provider-wide quota
+ok - fractional positive quota is eligible
+ok - unknown harness fails closed
+ok - all candidates are validated before selection
+ok - malformed provider data fails closed
+ok - multiple JSON values fail closed
+ok - known-empty quota fails closed
+ok - semantics and availability statuses must agree
+ok - exhausted runway vetoes unknown headroom
+ok - unknown headroom is not positive quota
+ok - partial semantics accept mixed availability
+ok - stdin snapshot is accepted
+ok - empty model candidate fails closed
+ok - bare harness maps to default model
+ok - default TOON snapshot is accepted
+ok - renderer-shaped TOON snapshot is accepted
+ok - malformed nonzero TOON envelopes fail closed
+ok - zero-row TOON has no positive quota
+ok - empty-array TOON has no positive quota
+ok - inline attention TOON has no positive quota
+ok - TOON attention identities fail closed
+ok - truncated zero-row TOON fails closed
+ok - malformed zero-row TOON fails closed
+ok - zero-row TOON rejects leading garbage
+ok - counted TOON rows require every declared field
+ok - TOON conversion preserves unknown-headroom exhaustion
+ok - trailing empty TOON fields fail closed
+ok - quoted TOON scope vetoes dispatch
+ok - provider-level unknown quota is not positive
+ok - Muse candidate is accepted
+ok - Muse uses Meta quota
+ok - agy candidate is accepted
+ok - exhausted agy quota yields to later candidate
+ok - duplicate providers fail closed
+ok - empty quota scopes fail closed
+ok - whitespace quota identities fail closed
+ok - out-of-range quota fails closed
+ok - invalid runway status fails closed
+ok - missing applicable quota is not positive
+ok - any exhausted applicable scope vetoes dispatch
+ok - named model quota matches exact identity only
+ok - invalid availability status fails closed
+ok - helper reuses the captured quota snapshot
+# all fm-quota-choose tests passed
+FM_TEST_END 2026-09-14T10:03:57Z tests/fm-quota-choose.test.sh exit=0 duration_ms=11796 gate_skip=false
+FM_TEST_SUMMARY total=4 failed=0 skipped_gate=0 duration_ms=86530
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=3 duration_ms=78767 failed=0
+FM_TEST_SUMMARY_FAMILY family=standalone count=1 duration_ms=11796 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-agy-harness.test.sh duration_ms=63207
+FM_TEST_SLOWEST rank=2 script=tests/fm-quota-choose.test.sh duration_ms=11796
+FM_TEST_SLOWEST rank=3 script=tests/fm-composer-lib.test.sh duration_ms=11067
+FM_TEST_SLOWEST rank=4 script=tests/fm-composer-ghost.test.sh duration_ms=4493
+restoration-suites-exit=0

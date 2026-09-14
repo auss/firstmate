@@ -1,0 +1,4 @@
+FM_TEST_COVERAGE ok total=207 parallel=24 parallel_max_ms=417163 parallel_imbalance_ms=2894 parallel_unhinted=0 serial=167 serial_shards=5 serial_unhinted=17 herdr=16
+check-coverage-exit=0
+upstream-base-ancestor=yes
+replayed-commits=21 merges=0

@@ -1,0 +1,28 @@
+ancestry-harness-verdict: pi
+=== agy signals live e2e ===
+FM_TEST_BEGIN 2026-09-14T10:00:56Z tests/fm-agy-signals-live-e2e.test.sh family=live-harness-optin expected_gate_skip=live-capability
+ok - the real agy busy footer matches fm_busy_agy_tail_busy in flight
+ok - the real agy worker processed its launch prompt
+ok - a single Escape cancels the real agy turn
+ok - /quit stops the real agy process
+FM_TEST_END 2026-09-14T10:01:10Z tests/fm-agy-signals-live-e2e.test.sh exit=0 duration_ms=13960 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=14070
+FM_TEST_SUMMARY_FAMILY family=live-harness-optin count=1 duration_ms=13960 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-agy-signals-live-e2e.test.sh duration_ms=13960
+agy-live-exit=0
+=== afk pi-herdr return e2e ===
+FM_TEST_BEGIN 2026-09-14T10:01:11Z tests/fm-afk-pi-herdr-return-e2e.test.sh family=live-harness-optin expected_gate_skip=live-capability
+ok - real Pi primary: the away posture is recorded with no daemon launched
+ok - real Pi/Herdr: nothing injects into the captain pane under the away posture
+ok - real unmarked Pi return renders the brief, opens catch-up, and reports that posture through Bearings while the blocker stays Firstmate's to remediate
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+fm-afk-launch: away-posture record archived at /tmp/fm-afk-pi-return-e2e.ClthBr/home/state/afk-contracts/1789380094.afk-contract
+fm-afk-launch: away mode stopped; daemon terminal torn down, .afk cleared, and the posture record archived
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+ok - resolved return catch-up allows Bearings and a clean idempotent away re-entry
+evidence: herdr=herdr 0.9.0 pi=0.85.1 target=fm-lab-fm-afk-pi-return-2062406-17895:w1:p1 archived-records=2
+FM_TEST_END 2026-09-14T10:01:38Z tests/fm-afk-pi-herdr-return-e2e.test.sh exit=0 duration_ms=27183 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=27300
+FM_TEST_SUMMARY_FAMILY family=live-harness-optin count=1 duration_ms=27183 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-afk-pi-herdr-return-e2e.test.sh duration_ms=27183
+afk-pi-herdr-exit=0
