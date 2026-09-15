@@ -22,8 +22,9 @@
 # SCHEMA fm-eggbot-context-debt.v1 (this header is the owner). Required:
 #   schema     literal "fm-eggbot-context-debt.v1"
 #   event_id   path-safe slug [A-Za-z0-9._-], no leading dot, length 1..64
-#   project    one-line repo/project identity for `tasks-axi add --repo`
-#   title      one-line task title for `tasks-axi add`
+#   project    one-line repo/project identity for `tasks-axi add --repo`;
+#              must not start with `-`
+#   title      one-line task title for `tasks-axi add`; must not start with `-`
 #   debt       non-empty array of items
 # Optional:
 #   task_id    path-safe slug for the backlog row; default event_id
@@ -50,10 +51,15 @@
 # Extra object keys are ignored so producers can extend without a bump.
 #
 # INGEST. Validates each inbox *.json, skips an event whose processed receipt
-# already exists, creates the row with fm-tasks-axi.sh add when it is absent,
-# holds it with fm-captain-hold.sh hold --reason, then writes the processed
-# receipt. Re-ingest of an already-held row is hold-idempotent and then writes
-# the receipt so a crash between hold and receipt cannot double-create.
+# already exists, then creates or resumes a backlog row. Creation seeds the
+# row with a one-line `Eggbot-event: <event_id>` body via `tasks-axi add --body`
+# so a crash before the full-body update is recoverable. An existing row is
+# resumed only when that provenance line is present; any other occupant of
+# `task_id` is a collision and is refused. The full event body is written with
+# `update --body-file` and verified before hold. The processed receipt is
+# written only after that body still contains both the provenance line and
+# `Definition of done:`. CLI-bound producer strings must not start with `-`;
+# add/update/show pass `--` before positional ids and titles.
 # Inbox files stay in place; the receipt is the skip key.
 #
 # CHECK. A standing watcher check: silent when inbox has no *.json, otherwise
@@ -74,10 +80,12 @@ INGEST_LOCK="$EGGBOT_DIR/.ingest.lock"
 RECORD="$STATE/.eggbot-check"
 CHECK_ID=eggbot
 CHECK_SHIM="$STATE/$CHECK_ID.check.sh"
-CHECK_TRUST="$STATE/$CHECK_ID.check-trust"
 REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"
+UNREGISTER_BIN="$SCRIPT_DIR/fm-check-unregister.sh"
 TASKS_AXI_BIN="$SCRIPT_DIR/fm-tasks-axi.sh"
 HOLD_BIN="$SCRIPT_DIR/fm-captain-hold.sh"
+EVENT_PROVENANCE_PREFIX='Eggbot-event:'
+FULL_BODY_MARK='Definition of done:'
 SCHEMA_NAME=fm-eggbot-context-debt.v1
 RECORD_SCHEMA=fm-eggbot-check-v1
 PROCESSED_SCHEMA=fm-eggbot-ingest-processed-v1
@@ -197,6 +205,12 @@ def one_line(name, value):
         die("%s must not contain control characters" % name)
     return value
 
+def cli_token(name, value):
+    value = one_line(name, value)
+    if value.startswith("-"):
+        die("%s must not start with a dash" % name)
+    return value
+
 def slug(name, value):
     value = one_line(name, value)
     if not slug_re.match(value):
@@ -233,8 +247,10 @@ if data.get("schema") != schema_name:
 
 event_id = slug("event_id", data.get("event_id"))
 task_id = slug("task_id", data["task_id"]) if "task_id" in data else event_id
-project = one_line("project", data.get("project"))
-title = one_line("title", data.get("title"))
+if task_id.startswith("-") or event_id.startswith("-"):
+    die("task_id and event_id must not start with a dash")
+project = cli_token("project", data.get("project"))
+title = cli_token("title", data.get("title"))
 kind = data.get("kind", "ship")
 if kind not in ("ship", "scout", "captain"):
     die("kind must be ship, scout, or captain")
@@ -342,6 +358,7 @@ if len(hold_reason) > 500:
     die("composed hold reason exceeds 500 characters")
 
 body_lines = [
+    "Eggbot-event: %s" % event_id,
     "Eggbot context-debt event %s." % event_id,
     "Project: %s" % project,
 ]
@@ -402,15 +419,41 @@ write_processed() {  # <event_id> <task_id> <source-basename>
   mv -f -- "$tmp" "$dest" || { rm -f -- "$tmp"; return 1; }
 }
 
+task_show_full() {  # <task_id>
+  "$TASKS_AXI_BIN" show --full -- "$1" 2>/dev/null
+}
+
 task_exists() {  # <task_id>
   local out
-  out=$("$TASKS_AXI_BIN" show "$1" 2>/dev/null) || return 1
+  out=$(task_show_full "$1") || return 1
   printf '%s\n' "$out" | grep -q '^  state: '
 }
 
-add_task() {  # <task_id> <title> <kind> <project> <body-file>
-  "$TASKS_AXI_BIN" add "$1" "$2" --kind "$3" --repo "$4" >/dev/null || return 1
-  "$TASKS_AXI_BIN" update "$1" --body-file "$5" >/dev/null
+event_provenance_needle() {  # <event_id>
+  printf '%s %s' "$EVENT_PROVENANCE_PREFIX" "$1"
+}
+
+task_has_event_provenance() {  # <task_id> <event_id>
+  local out
+  out=$(task_show_full "$1") || return 1
+  printf '%s\n' "$out" | grep -F -- "$(event_provenance_needle "$2")" >/dev/null
+}
+
+task_has_full_event_body() {  # <task_id> <event_id>
+  local out
+  out=$(task_show_full "$1") || return 1
+  printf '%s\n' "$out" | grep -F -- "$(event_provenance_needle "$2")" >/dev/null || return 1
+  printf '%s\n' "$out" | grep -F -- "$FULL_BODY_MARK" >/dev/null
+}
+
+add_task() {  # <task_id> <title> <kind> <project> <event_id>
+  local seed
+  seed=$(event_provenance_needle "$5")
+  "$TASKS_AXI_BIN" add --kind "$3" --repo "$4" --body "$seed" -- "$1" "$2" >/dev/null
+}
+
+repair_body() {  # <task_id> <body-file>
+  "$TASKS_AXI_BIN" update --body-file "$2" -- "$1" >/dev/null
 }
 
 hold_task() {  # <task_id> <reason>
@@ -446,17 +489,45 @@ process_event_file() {  # <json-file>; sets PROCESS_RESULT=created|skipped|faile
     PROCESS_RESULT=skipped
     return 0
   fi
-  if ! task_exists "$task_id"; then
-    add_task "$task_id" "$title" "$kind" "$project" "$parsed/body" || rc=$?
+  if task_exists "$task_id"; then
+    if ! task_has_event_provenance "$task_id" "$event_id"; then
+      rm -rf -- "$parsed"
+      printf 'fm-eggbot-ingest: task %s already exists and is not eggbot event %s\n' \
+        "$task_id" "$event_id" >&2
+      return 1
+    fi
+  else
+    add_task "$task_id" "$title" "$kind" "$project" "$event_id" || rc=$?
     if [ "$rc" -ne 0 ]; then
       rm -rf -- "$parsed"
       printf 'fm-eggbot-ingest: could not add task %s for event %s\n' "$task_id" "$event_id" >&2
       return 1
     fi
   fi
+  if ! task_has_full_event_body "$task_id" "$event_id"; then
+    repair_body "$task_id" "$parsed/body" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      rm -rf -- "$parsed"
+      printf 'fm-eggbot-ingest: could not write the event body on task %s for event %s\n' \
+        "$task_id" "$event_id" >&2
+      return 1
+    fi
+  fi
+  if ! task_has_full_event_body "$task_id" "$event_id"; then
+    rm -rf -- "$parsed"
+    printf 'fm-eggbot-ingest: task %s body is missing event %s provenance\n' \
+      "$task_id" "$event_id" >&2
+    return 1
+  fi
   if ! hold_task "$task_id" "$reason"; then
     rm -rf -- "$parsed"
     printf 'fm-eggbot-ingest: could not hold task %s for event %s\n' "$task_id" "$event_id" >&2
+    return 1
+  fi
+  if ! task_has_full_event_body "$task_id" "$event_id"; then
+    rm -rf -- "$parsed"
+    printf 'fm-eggbot-ingest: task %s lost event %s body before the processed receipt\n' \
+      "$task_id" "$event_id" >&2
     return 1
   fi
   if ! write_processed "$event_id" "$task_id" "$(basename "$json")"; then
@@ -658,7 +729,20 @@ action_arm() {
 }
 
 action_disarm() {
-  rm -f -- "$CHECK_SHIM" "$CHECK_TRUST" "$RECORD"
+  [ -d "$STATE" ] && [ ! -L "$STATE" ] || {
+    printf 'fm-eggbot-ingest: state directory is unavailable\n' >&2
+    return 1
+  }
+  if ! "$UNREGISTER_BIN" "$CHECK_ID" >/dev/null; then
+    printf 'fm-eggbot-ingest: could not unregister %s\n' "$CHECK_SHIM" >&2
+    return 1
+  fi
+  if [ -e "$RECORD" ] || [ -L "$RECORD" ]; then
+    if ! rm -f -- "$RECORD" || [ -e "$RECORD" ] || [ -L "$RECORD" ]; then
+      printf 'fm-eggbot-ingest: could not remove %s\n' "$RECORD" >&2
+      return 1
+    fi
+  fi
   printf 'disarmed: state/%s.check.sh\n' "$CHECK_ID"
   return 0
 }

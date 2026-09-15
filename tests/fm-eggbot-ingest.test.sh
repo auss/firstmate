@@ -27,14 +27,27 @@ LOG='$store/log'
 mkdir -p "\$STORE"
 printf '%s\n' "\$*" >> "\$LOG"
 
+BODY_FILE=
+BODY=
+REASON=
+KIND=
+REPO=
 skip_flags() {
   local -a out=()
   while [ "\$#" -gt 0 ]; do
     case "\$1" in
-      --file|--body-file|--reason|--kind|--repo|--until)
+      --)
+        shift
+        while [ "\$#" -gt 0 ]; do
+          out+=("\$1")
+          shift
+        done
+        ;;
+      --file|--body-file|--body|--reason|--kind|--repo|--until)
         [ "\$#" -ge 2 ] || exit 1
         case "\$1" in
           --body-file) BODY_FILE=\$2 ;;
+          --body) BODY=\$2 ;;
           --reason) REASON=\$2 ;;
           --kind) KIND=\$2 ;;
           --repo) REPO=\$2 ;;
@@ -42,9 +55,10 @@ skip_flags() {
         shift 2
         ;;
       --full) shift ;;
-      --file=*|--body-file=*|--reason=*|--kind=*|--repo=*|--until=*)
+      --file=*|--body-file=*|--body=*|--reason=*|--kind=*|--repo=*|--until=*)
         case "\$1" in
           --body-file=*) BODY_FILE=\${1#--body-file=} ;;
+          --body=*) BODY=\${1#--body=} ;;
           --reason=*) REASON=\${1#--reason=} ;;
           --kind=*) KIND=\${1#--kind=} ;;
           --repo=*) REPO=\${1#--repo=} ;;
@@ -79,6 +93,7 @@ show_row() {
 }
 
 BODY_FILE=
+BODY=
 REASON=
 KIND=
 REPO=
@@ -95,6 +110,10 @@ case "\${1:-}" in
     fi
     id=\${2:-}
     [ -n "\$id" ] && [ -d "\$STORE/\$id" ] || exit 1
+    if [ -f "\$STORE/fail-update-once" ]; then
+      rm -f "\$STORE/fail-update-once"
+      exit 1
+    fi
     [ -n "\$BODY_FILE" ] || exit 1
     cat "\$BODY_FILE" > "\$STORE/\$id/body"
     ;;
@@ -129,6 +148,12 @@ case "\${1:-}" in
     printf 'no\n' > "\$STORE/\$id/held"
     printf '%s\n' '-' > "\$STORE/\$id/hold_kind"
     : > "\$STORE/\$id/body"
+    if [ -n "\$BODY" ]; then
+      printf '%s\n' "\$BODY" > "\$STORE/\$id/body"
+    fi
+    if [ -n "\$BODY_FILE" ]; then
+      cat "\$BODY_FILE" > "\$STORE/\$id/body"
+    fi
     printf '%s\n' "\$id"
     ;;
   show)
@@ -248,7 +273,11 @@ test_happy_path_creates_and_holds() {
     "hold reason has no parentheses"
   assert_equals "family-meal-planner" "$(cat "$home/fake-tasks/$task/repo")" \
     "add used the event project as repo"
-  assert_grep "add $task " "$home/fake-tasks/log" "ingest called tasks-axi add"
+  assert_contains "$(cat "$home/fake-tasks/$task/body")" "Eggbot-event: fmp-2026-09-14-context-debt" \
+    "task body records event provenance"
+  assert_contains "$(cat "$home/fake-tasks/$task/body")" "Definition of done:" \
+    "task body includes definition of done"
+  assert_grep "-- $task " "$home/fake-tasks/log" "ingest passed -- before the task id"
   assert_equals "$(printf '## In flight\n\n## Queued\n\n## Done\n')" \
     "$(cat "$home/data/backlog.md")" \
     "ingest must not hand-edit data/backlog.md"
@@ -265,7 +294,7 @@ test_reingest_is_idempotent() {
   assert_contains "$second" "created=0" "re-ingest creates nothing"
   assert_contains "$second" "skipped=1" "re-ingest skips the processed event"
   assert_contains "$second" "failed=0" "re-ingest has no failures"
-  add_count=$(grep -c "^add $task " "$home/fake-tasks/log" || true)
+  add_count=$(grep -c '^add ' "$home/fake-tasks/log" || true)
   [ "$add_count" = 1 ] || fail "re-ingest must not add the task again (add count=$add_count)"
   pass "fm-eggbot-ingest: re-ingest is idempotent"
 }
@@ -365,6 +394,94 @@ test_arm_writes_and_binds_and_disarm_removes() {
   pass "fm-eggbot-ingest: arm binds the standing check and disarm removes it"
 }
 
+test_partial_create_repairs_body_before_receipt() {
+  local home out rc=0 task=partial-body-task event=partial-body-event
+  home=$(make_home partial)
+  write_event "$home" "week.json" "$(sample_event "$event" "$task")"
+  : > "$home/fake-tasks/fail-update-once"
+  out=$(run_ingest "$home" ingest 2>&1) || rc=$?
+  expect_code 1 "$rc" "a failed body update must fail ingest"
+  assert_absent "$home/state/eggbot/processed/$event" \
+    "failed body update must not write a receipt"
+  assert_present "$home/fake-tasks/$task/body" "seed row exists after add"
+  assert_contains "$(cat "$home/fake-tasks/$task/body")" "Eggbot-event: $event" \
+    "add seeds event provenance"
+  assert_not_contains "$(cat "$home/fake-tasks/$task/body")" "Definition of done:" \
+    "failed update leaves the full body unwritten"
+  out=$(run_ingest "$home" ingest 2>&1) || fail "retry after a failed body update must succeed: $out"
+  assert_contains "$out" "created=1" "retry creates after repairing the body"
+  assert_present "$home/state/eggbot/processed/$event" "receipt waits until the full body exists"
+  assert_contains "$(cat "$home/fake-tasks/$task/body")" "Definition of done:" \
+    "retry writes the full event body"
+  pass "fm-eggbot-ingest: partial create repairs body before the receipt"
+}
+
+test_task_id_collision_is_refused() {
+  local home out rc=0 task=release-check
+  home=$(make_home collision)
+  mkdir -p "$home/fake-tasks/$task"
+  printf '%s\n' 'release audit' > "$home/fake-tasks/$task/title"
+  printf '%s\n' 'ship' > "$home/fake-tasks/$task/kind"
+  printf '%s\n' 'family-meal-planner' > "$home/fake-tasks/$task/repo"
+  printf 'queued\n' > "$home/fake-tasks/$task/state"
+  printf 'no\n' > "$home/fake-tasks/$task/held"
+  printf '%s\n' '-' > "$home/fake-tasks/$task/hold_kind"
+  printf '%s\n' 'unrelated release work' > "$home/fake-tasks/$task/body"
+  write_event "$home" "week.json" "$(sample_event collide-event "$task")"
+  out=$(run_ingest "$home" ingest 2>&1) || rc=$?
+  expect_code 1 "$rc" "an unrelated task_id must fail ingest"
+  assert_contains "$out" "already exists and is not eggbot event collide-event" \
+    "collision names the existing task and event"
+  assert_absent "$home/state/eggbot/processed/collide-event" \
+    "collision must not write a receipt"
+  assert_equals "no" "$(cat "$home/fake-tasks/$task/held")" "collision must not hold the foreign row"
+  assert_equals "release audit" "$(cat "$home/fake-tasks/$task/title")" \
+    "collision must not rewrite the foreign title"
+  assert_equals "unrelated release work" "$(cat "$home/fake-tasks/$task/body")" \
+    "collision must not rewrite the foreign body"
+  pass "fm-eggbot-ingest: unrelated task_id collisions are refused"
+}
+
+test_leading_dash_title_is_rejected() {
+  local home out rc=0
+  home=$(make_home dash-title)
+  write_event "$home" "dash.json" '{
+    "schema": "fm-eggbot-context-debt.v1",
+    "event_id": "dash-event",
+    "project": "family-meal-planner",
+    "title": "-n injected",
+    "debt": [{
+      "id": "item",
+      "summary": "x",
+      "reason": "merge is not done",
+      "dod": {
+        "merge_is_not_done": true,
+        "require_green_ci": true,
+        "closure": {"kind": "process_patch"}
+      }
+    }]
+  }'
+  out=$(run_ingest "$home" ingest 2>&1) || rc=$?
+  expect_code 1 "$rc" "a leading-dash title must fail ingest"
+  assert_contains "$out" "title must not start with a dash" "leading-dash titles are refused"
+  assert_absent "$home/fake-tasks/log" "leading-dash title must not invoke tasks-axi"
+  assert_absent "$home/fake-tasks/dash-event" "leading-dash title must not add a row"
+  [ ! -e "$home/state/eggbot/processed/dash-event" ] || fail "leading-dash title must not write a receipt"
+  pass "fm-eggbot-ingest: leading-dash titles cannot inject CLI options"
+}
+
+test_disarm_fails_closed_when_record_cannot_be_removed() {
+  local home out rc=0
+  home=$(make_home disarm-fail)
+  run_ingest "$home" arm >/dev/null || fail "arm must succeed before a failing disarm"
+  mkdir -p "$home/state/.eggbot-check/nested"
+  out=$(run_ingest "$home" disarm 2>&1) || rc=$?
+  expect_code 1 "$rc" "disarm must fail when the report record cannot be removed"
+  assert_not_contains "$out" "disarmed:" "failed disarm must not report success"
+  assert_contains "$out" "could not remove" "failed disarm names the stuck record"
+  pass "fm-eggbot-ingest: disarm fails closed when removal fails"
+}
+
 test_help_and_usage
 test_happy_path_creates_and_holds
 test_reingest_is_idempotent
@@ -374,3 +491,7 @@ test_reject_parentheses_in_reason
 test_check_invokes_ingest_when_inbox_has_work
 test_check_silent_when_inbox_empty
 test_arm_writes_and_binds_and_disarm_removes
+test_partial_create_repairs_body_before_receipt
+test_task_id_collision_is_refused
+test_leading_dash_title_is_rejected
+test_disarm_fails_closed_when_record_cannot_be_removed
