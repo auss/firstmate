@@ -1907,7 +1907,7 @@ A throwaway scout was spawned through `bin/fm-spawn.sh --scout --harness omp --m
 ## Primary-resource handover
 
 `bin/fm-primary-resource.sh`'s header owns the main-session resource-protection contract: thresholds, incident identity, the immutable receipt, and the helper lifecycle.
-This section owns only the verification grades behind that guarantee, established on 2026-09-13 on Linux (Herdr 0.9.0 for the Herdr path), and each fact below states the grade it was actually established at.
+This section owns only the verification grades behind that guarantee, established on 2026-09-13 and re-verified post-merge on 2026-09-15 on Linux (Herdr 0.9.0, tmux 3.3a), and each fact below states the grade it was actually established at.
 Live means a real backend drove the real scripts end to end; transcript-fixture means a parser-level regression over a recorded vendor transcript shape, and neither grade implies the other.
 
 ### Live backend handover paths
@@ -1919,17 +1919,18 @@ The Herdr handover path was verified live through the real `bin/fm-herdr-lab.sh`
 FM_PRIMARY_RESOURCE_HERDR_LAB_E2E=1 bin/fm-test-run.sh tests/fm-primary-resource-herdr-lab-e2e.test.sh
 ```
 
-Executed twice on 2026-09-13, both runs green with `gate_skip=false`:
+Executed twice on 2026-09-15 against the merged default branch, both runs green with `gate_skip=false`:
 
 ```text
 ok - live Herdr lab handover: check->commit->helper->successor, default untouched
-FM_TEST_END 2026-09-13T09:18:24Z tests/fm-primary-resource-herdr-lab-e2e.test.sh exit=0 duration_ms=26917 gate_skip=false
+FM_TEST_END 2026-09-15T17:02:06Z tests/fm-primary-resource-herdr-lab-e2e.test.sh exit=0 duration_ms=21322 gate_skip=false
+FM_TEST_END 2026-09-15T17:02:39Z tests/fm-primary-resource-herdr-lab-e2e.test.sh exit=0 duration_ms=18894 gate_skip=false
 ```
 
 The guard drives the whole Herdr transaction against the real CLI: check proposes the context handover, commit creates the helper's own non-focused workspace pane, the helper really runs in that pane, proves the occupant unchanged through `pane process-info`, delivers the real `/exit`, launches the successor into the primary pane, records the `started` outcome, closes the helper pane and workspace, and removes both launch files.
 An independent `herdr session list` before and after teardown was identical, no lab leaked, and the default session stayed byte-identical throughout.
 
-The tmux helper exit -> shell -> successor path is exercised live inside the main resource-guard suite, green the same day with `gate_skip=false`:
+The tmux helper exit -> shell -> successor path is exercised live inside the main resource-guard suite, green on 2026-09-15 with `gate_skip=false`:
 
 ```sh
 bin/fm-test-run.sh tests/fm-primary-resource.test.sh
@@ -1937,7 +1938,7 @@ bin/fm-test-run.sh tests/fm-primary-resource.test.sh
 
 ```text
 ok - live isolated tmux helper exit->shell->successor
-FM_TEST_END 2026-09-13T09:22:02Z tests/fm-primary-resource.test.sh exit=0 duration_ms=209330 gate_skip=false
+FM_TEST_END 2026-09-15T17:05:38Z tests/fm-primary-resource.test.sh exit=0 duration_ms=173738 gate_skip=false
 ```
 
 Both live paths drive copied binaries renamed to a harness name (bash and an editor as `claude`/`codex`) so the real process classifiers see a live agent and the occupant really exits on the delivered `/exit`; they prove the backend handover machinery, not a real harness transcript read.
