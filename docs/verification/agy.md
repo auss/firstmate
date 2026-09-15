@@ -173,7 +173,8 @@ No automatic quota failover was exercised or claimed; every handoff above was an
 The unauthenticated failure mode was never observed; this host's agy runs signed in, so any auth prompt is a fail-loud credential blocker, not a handled dialog.
 No slash-skill invocation form was verified, so skill invocation stays natural language.
 `--continue` and `--conversation` resume were never exercised; recovery uses deterministic relaunch from the brief on disk.
-No primary or secondmate behavior was built or tested, and none is claimed.
+No secondmate behavior was built or tested, and none is claimed.
+The one agy primary surface is `bin/fm-primary-resource.sh`'s main-session quota handover, added after this record; [`runtime-backends.md`](runtime-backends.md) "Primary-resource handover" owns its verification grades.
 
 ## Refreshing this record
 

@@ -18,8 +18,15 @@
 # When both triggers apply, quota wins. Only Claude and Codex have context
 # adapters, verified at parser level against recorded transcript shapes
 # (docs/verification/runtime-backends.md "Primary-resource handover" owns the
-# verification grades); every other adapter is alert-only and never closes
-# the session. One automatic action per incident:
+# verification grades); every other adapter is alert-only for context and never
+# closes the session on a context reading. Antigravity (agy) transcripts carry
+# no token counts, so agy context always reads unknown (agy-no-usage) and is
+# never estimated; agy takes part in quota handover as an independent provider
+# (destination only until primary binding and idle signals are verified),
+# and a stale or unknown agy quota row stays
+# alert-only. Quota destinations are tried in a fixed order per source:
+# claude -> codex, agy; codex -> claude, agy. agy sources stay alert-only.
+# One automatic action per incident:
 # a receipt created no-clobber before any terminal action; check never
 # re-proposes an incident that already has a receipt; commit refuses one; failed
 # receipts are never deleted.
@@ -72,6 +79,9 @@
 # Residual limit: a successor that reaches a login/auth prompt still classifies
 # as a live agent; only the check-side reconciliation alert (started with no new
 # binding within the bound) surfaces that stalled handover. Never auto-retry.
+# An agy-destination successor raises no such alert: agy has no turn-end hook
+# to advance the binding generation, so a healthy and a stalled agy successor
+# are indistinguishable at this boundary.
 #
 # Stow attestation (exactly one shape; commit rejects all others):
 #   FM_PRIMARY_RESOURCE_STOW_V1
@@ -190,6 +200,8 @@ pr_lock_pid() {
 
 pr_primary_busy_state() {  # <backend> <target> <harness> -> busy|idle|unknown
   local backend=$1 target=$2 harness=$3 b
+  # agy has no verified primary turn-end binding or positive idle signal.
+  [ "$harness" != agy ] || { printf 'unknown\n'; return 0; }
   if [ -n "${FM_PRIMARY_RESOURCE_BUSY_STATE_FILE:-}" ] && [ -f "$FM_PRIMARY_RESOURCE_BUSY_STATE_FILE" ]; then
     tr -d '\n' < "$FM_PRIMARY_RESOURCE_BUSY_STATE_FILE"
     printf '\n'
@@ -636,11 +648,21 @@ pr_read_context_codex() {  # <transcript>
   ' -n "$path" 2>/dev/null || printf '{"tokens":null,"reliability":"unknown","reason":"malformed-usage"}'
 }
 
+# agy transcript.jsonl / transcript_full.jsonl steps hold only step_index,
+# source, type, status, created_at, content, thinking, tool_calls,
+# truncated_fields, and error: no token usage exists to read, and a byte-size
+# estimate could close a healthy session, so the reading is always unknown.
+pr_read_context_agy() {  # <transcript>
+  [ -f "$1" ] || { printf '{"tokens":null,"reliability":"unknown","reason":"missing-binding"}'; return 0; }
+  printf '{"tokens":null,"reliability":"unknown","reason":"agy-no-usage"}'
+}
+
 pr_read_context() {  # <harness> <transcript>
   local harness=$1 path=$2
   case "$harness" in
     claude) pr_read_context_claude "$path" ;;
     codex) pr_read_context_codex "$path" ;;
+    agy) pr_read_context_agy "$path" ;;
     *) printf '{"tokens":null,"reliability":"unknown","reason":"unsupported-adapter"}' ;;
   esac
 }
@@ -649,8 +671,7 @@ pr_read_context() {  # <harness> <transcript>
 
 pr_provider_for_harness() {
   case "$1" in
-    claude) printf 'claude\n' ;;
-    codex) printf 'codex\n' ;;
+    claude|codex|agy) printf '%s\n' "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -734,13 +755,29 @@ pr_quota_verdict() {  # <provider> <quota-json>
   ' 2>/dev/null || printf '{"provider":"%s","exhausted":[],"reliability":"unknown","ambiguousReset":false}' "$provider"
 }
 
+# The first eligible destination wins; when none is, the preferred (first)
+# candidate's rejection is reported.
 pr_find_replacement() {  # <sourceHarness> <sourceProvider> <quota-json> [pid]
-  local src_h=$1 src_p=$2 qjson=$3 pid=${4:--} dest_h dest_p row
+  local src_h=$1 src_p=$2 qjson=$3 pid=${4:--} candidates dest result first=''
   case "$src_h" in
-    claude) dest_h=codex; dest_p=codex ;;
-    codex) dest_h=claude; dest_p=claude ;;
+    claude) candidates="codex agy" ;;
+    codex) candidates="claude agy" ;;
+    agy) printf '{"eligible":false,"harness":null,"provider":null,"reason":"agy-source-unverified"}'; return 0 ;;
     *) printf '{"eligible":false,"harness":null,"provider":null,"reason":"no-verified-template"}'; return 0 ;;
   esac
+  for dest in $candidates; do
+    result=$(pr_replacement_candidate "$src_p" "$dest" "$qjson" "$pid")
+    if [ "$(printf '%s' "$result" | jq -r '.eligible')" = true ]; then
+      printf '%s' "$result"
+      return 0
+    fi
+    [ -n "$first" ] || first=$result
+  done
+  printf '%s' "$first"
+}
+
+pr_replacement_candidate() {  # <sourceProvider> <destHarness> <quota-json> <pid>
+  local src_p=$1 dest_h=$2 qjson=$3 pid=$4 dest_p=$2 row
   [ "$dest_p" != "$src_p" ] || {
     printf '{"eligible":false,"harness":"%s","provider":"%s","reason":"same-provider"}' "$dest_h" "$dest_p"
     return 0
@@ -821,11 +858,11 @@ action_observe() {
 
   harness=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || true)
   case "$harness" in
-    claude|codex) ;;
+    claude|codex|agy) ;;
     *) harness=$(printf '%s' "$payload" | jq -r '.harness // empty' 2>/dev/null) ;;
   esac
   case "$harness" in
-    claude|codex) ;;
+    claude|codex|agy) ;;
     *) harness=unsupported ;;
   esac
 
@@ -922,7 +959,13 @@ pr_reconcile_stranded() {
         # successor's first turn end is the only writer of that generation and
         # routinely runs minutes, so this stage waits out a longer bound.
         [ "$age" -ge "$STARTED_RECONCILE_SECS" ] || continue
-        local bind_gen
+        local dest_h bind_gen
+        dest_h=$(jq -r '.destinationHarness // empty' "$PR_DIR/receipts/$incident.json" 2>/dev/null || printf '')
+        # agy successors have no turn-end hook to advance the binding
+        # generation, so this alert could never clear for a healthy one.
+        if [ "$dest_h" = agy ]; then
+          continue
+        fi
         bind_gen=$(jq -r '.sessionId // "unknown"' "$PR_DIR/binding.json" 2>/dev/null || printf unknown)
         if [ "$bind_gen" = "$gen" ]; then
           pr_alert_once "$gen" "stalled-successor-$incident" \
@@ -955,6 +998,7 @@ action_check() {
     harness=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
     case "$harness" in
       claude|codex) line="context unavailable (no binding yet)" ;;
+      agy) line="adapter agy is alert-only for context (agy transcripts carry no token usage)" ;;
       *) line="adapter $harness is alert-only (only Claude and Codex have reliable context readings)" ;;
     esac
     if pr_alert_once "$generation" "context-unavailable" \
@@ -1504,6 +1548,15 @@ pr_commit_revalidate() {  # <incident> <expected-action> -> 0 if still warranted
     return 1
   fi
   [ "$fresh_id" = "$incident" ] || return 1
+  if [ "$expected" = quota ] && ! jq -e --argjson fresh "$decision" '
+    .replacement.harness == $fresh.replacement.harness and
+    .replacement.provider == $fresh.replacement.provider
+  ' "$PR_DIR/proposals/$incident.json" >/dev/null; then
+    PR_REVALIDATE_REASON='destination changed'
+    return 1
+  fi
+  PR_REVALIDATE_DEST_H=$(printf '%s' "$decision" | jq -r '.replacement.harness // empty')
+  PR_REVALIDATE_DEST_P=$(printf '%s' "$decision" | jq -r '.replacement.provider // empty')
   return 0
 }
 
@@ -1564,6 +1617,8 @@ action_commit() {
   # Under the resource lock: binding must still be the lock owner; re-read
   # evidence and refuse unless the same action remains warranted.
   PR_REVALIDATE_REASON=
+  PR_REVALIDATE_DEST_H=
+  PR_REVALIDATE_DEST_P=
   if ! pr_commit_revalidate "$incident" "$action"; then
     pr_lock_release
     printf 'fm-primary-resource: commit revalidation refused (%s)\n' \
@@ -1573,8 +1628,10 @@ action_commit() {
 
   src_h=$(jq -r '.harness' "$PR_DIR/binding.json")
   src_p=$(pr_provider_for_harness "$src_h" 2>/dev/null || printf '')
-  dest_h=$(jq -r '.replacement.harness // empty' "$proposal")
-  dest_p=$(jq -r '.replacement.provider // empty' "$proposal")
+  # Use the revalidated destination, never the proposal file: a concurrent
+  # check rewrites proposals/<incident>.json without this lock.
+  dest_h=$PR_REVALIDATE_DEST_H
+  dest_p=$PR_REVALIDATE_DEST_P
   if [ "$action" = context ]; then
     dest_h=$src_h
     dest_p=$src_p
@@ -1639,10 +1696,22 @@ action_commit() {
     case "$dest_h" in
       claude) bin=$(command -v claude) || { pr_lock_release; printf 'fm-primary-resource: claude binary missing\n' >&2; return 1; } ;;
       codex) bin=$(command -v codex) || { pr_lock_release; printf 'fm-primary-resource: codex binary missing\n' >&2; return 1; } ;;
+      agy) bin=$(command -v agy) || { pr_lock_release; printf 'fm-primary-resource: agy binary missing\n' >&2; return 1; } ;;
       *) pr_lock_release; printf 'fm-primary-resource: destination harness not a verified template\n' >&2; return 1 ;;
     esac
     prompt="This is a fresh main Firstmate session replacing the session recorded in receipt $incident. Read AGENTS.md. Run bin/fm-session-start.sh exactly once unless its complete digest was already supplied. Verify lock ownership, read the stow receipt and outstanding work through their existing owners, then resume the emitted supervision protocol. Do not retry this incident; its immutable receipt consumes the automatic action. Do not resume the previous vendor conversation."
-    launch_cmd=$(printf '%q %q' "$bin" "$prompt")
+    # agy submits the prompt and keeps the session only through --prompt-interactive
+    # (harness-adapters agy record).
+    if [ "$dest_h" = agy ]; then
+      if ! env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-agy-trust.sh" --primary-home "$FM_HOME"; then
+        pr_lock_release
+        printf 'fm-primary-resource: agy successor trust registration failed\n' >&2
+        return 1
+      fi
+      launch_cmd=$(printf 'cd -- %q && %q --prompt-interactive %q' "$FM_HOME" "$bin" "$prompt")
+    else
+      launch_cmd=$(printf '%q %q' "$bin" "$prompt")
+    fi
     printf '%s\n' "$launch_cmd" > "$PR_DIR/launch/$incident.cmd"
   fi
 
@@ -1858,7 +1927,7 @@ pr_pane_occupant_matches() {  # <backend> <target> <expected-pid> <expected-harn
   [ "$class" = agent ] || return 1
   # Harness name must appear in argv0/comm for the recorded source harness.
   case "$expected_harness" in
-    claude|codex)
+    claude|codex|agy)
       printf '%s\n%s\n' "$name" "$argv0" | grep -qi "$expected_harness" || return 1
       ;;
   esac

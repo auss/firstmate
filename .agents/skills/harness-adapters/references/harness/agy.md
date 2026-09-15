@@ -1,7 +1,7 @@
 # Antigravity CLI
 
 Antigravity's `agy` TUI, verified end to end on 2026-09-10 with agy 1.2.0 on Linux through the Herdr backend.
-Verified as a CREWMATE and SCOUT adapter only; `../../../../../bin/fm-spawn.sh` refuses a secondmate launch on it because `../../../../../docs/supervision-protocols/` carries no agy wake protocol.
+Verified as a CREWMATE and SCOUT adapter only; `../../../../../bin/fm-spawn.sh` refuses a secondmate launch on it because `../../../../../docs/supervision-protocols/` carries no agy wake protocol, and the one primary surface is `../../../../../bin/fm-primary-resource.sh`'s quota handover, which accepts agy as a destination only, fixture-grade only (`../../../../../docs/verification/runtime-backends.md` "Primary-resource handover" owns the grades) with context always alert-only.
 `../../../../../docs/verification/agy.md` owns how every fact below was established and what is still unproven.
 
 ## Operating facts
@@ -50,6 +50,9 @@ Teardown removes nothing agy-specific because the spawn leaves nothing behind.
 
 ## Primary integration
 
-Unsupported and unverified.
+The handover commit gate pre-registers the primary home with `../../../../../bin/fm-agy-trust.sh` before closing the source session.
+No agy source handover is enabled without a verified primary binding and idle signal.
+
+Unsupported and unverified, with one scoped exception: `../../../../../bin/fm-primary-resource.sh` accepts agy as a quota-handover destination only, fixture-grade only, with context always alert-only (`../../../../../docs/verification/runtime-backends.md` "Primary-resource handover" owns the grades).
 `../../../../../docs/supervision-protocols/` carries no agy protocol, no turn-end guard adapter exists for it, and this adapter verified only the crewmate-side launch, busy state, interrupt, and exit.
 `references/common/primary-hooks.md`'s unsupported-boundary rule applies: never invent a wake protocol from a similar TUI.

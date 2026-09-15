@@ -18,6 +18,9 @@ Handle a main-session resource-protection wake from `bin/fm-primary-resource.sh`
 The script owns thresholds, incident identity, receipts, and the helper lifecycle.
 This skill owns only the primary agent's stow-and-commit turn, and captain-facing alert wording.
 Only Claude and Codex have context adapters, verified at parser level against recorded transcript shapes; [`docs/verification/runtime-backends.md`](../../../docs/verification/runtime-backends.md) "Primary-resource handover" owns the verification grades, and every other adapter is alert-only.
+Antigravity (agy) is a quota-handover destination only; source sessions stay alert-only until primary binding and idle signals are verified.
+Its transcripts carry no token usage, and stale or unknown destination quota excludes it from selection.
+The commit gate registers the successor home through `bin/fm-agy-trust.sh` before reserving the handover; a registration failure keeps the source session.
 
 ## Handover wake (`primary-resource context <id>` or `primary-resource quota <id>`)
 
