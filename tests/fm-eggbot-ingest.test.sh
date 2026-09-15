@@ -4,7 +4,8 @@
 # Inbox JSON is ingested through fm-tasks-axi.sh add and fm-captain-hold.sh
 # hold against a fakebin tasks-axi, never by editing data/backlog.md. Cases
 # cover create+hold, idempotent re-ingest, already-processed skip, schema
-# rejection, and the arm/check standing-check surface.
+# rejection, the arm/check standing-check surface, tasks-axi 0.2.5 CLI order
+# without a bare `--` token, and HOME/.local/bin PATH bootstrap.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -37,11 +38,8 @@ skip_flags() {
   while [ "\$#" -gt 0 ]; do
     case "\$1" in
       --)
-        shift
-        while [ "\$#" -gt 0 ]; do
-          out+=("\$1")
-          shift
-        done
+        printf 'Unknown flag: --\\n' >&2
+        exit 1
         ;;
       --file|--body-file|--body|--reason|--kind|--repo|--until)
         [ "\$#" -ge 2 ] || exit 1
@@ -277,7 +275,15 @@ test_happy_path_creates_and_holds() {
     "task body records event provenance"
   assert_contains "$(cat "$home/fake-tasks/$task/body")" "Definition of done:" \
     "task body includes definition of done"
-  assert_grep "-- $task " "$home/fake-tasks/log" "ingest passed -- before the task id"
+  assert_grep "show $task --full" "$home/fake-tasks/log" \
+    "show uses id then --full"
+  assert_grep "add $task " "$home/fake-tasks/log" \
+    "add places the task id before flags"
+  assert_grep "update $task " "$home/fake-tasks/log" \
+    "update places the task id before --body-file"
+  if grep -E '(^|[[:space:]])--([[:space:]]|$)' "$home/fake-tasks/log" >/dev/null; then
+    fail "tasks-axi 0.2.5 rejects a bare -- token, but ingest passed one: $(cat "$home/fake-tasks/log")"
+  fi
   assert_equals "$(printf '## In flight\n\n## Queued\n\n## Done\n')" \
     "$(cat "$home/data/backlog.md")" \
     "ingest must not hand-edit data/backlog.md"
@@ -386,6 +392,8 @@ test_arm_writes_and_binds_and_disarm_removes() {
   assert_present "$home/state/eggbot/inbox" "arm creates the producer drop path"
   assert_contains "$(cat "$home/state/eggbot.check.sh")" "fm-eggbot-ingest.sh check" \
     "shim dispatches check"
+  assert_contains "$(cat "$home/state/eggbot.check.sh")" 'export PATH="$HOME/.local/bin:$PATH"' \
+    "shim prepends the user install prefix for a bare watcher PATH"
   out=$(run_ingest "$home" arm 2>&1) || fail "re-arm must succeed: $out"
   out=$(run_ingest "$home" disarm 2>&1) || fail "disarm must succeed: $out"
   assert_absent "$home/state/eggbot.check.sh" "disarm removes the shim"
@@ -482,6 +490,36 @@ test_disarm_fails_closed_when_record_cannot_be_removed() {
   pass "fm-eggbot-ingest: disarm fails closed when removal fails"
 }
 
+test_ingest_bootstraps_home_local_bin() {
+  local home out task=local-bin-task
+  home=$(make_home local-bin)
+  mkdir -p "$home/.local/bin"
+  mv "$home/fakebin/tasks-axi" "$home/.local/bin/tasks-axi"
+  write_event "$home" "week.json" "$(sample_event local-bin-event "$task")"
+  out=$(PATH="$BASE_PATH" HOME="$home" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$INGEST" ingest 2>&1) || fail "ingest must find tasks-axi via HOME/.local/bin: $out"
+  assert_contains "$out" "created=1" "PATH bootstrap still creates the event"
+  assert_present "$home/state/eggbot/processed/local-bin-event" "PATH bootstrap writes a receipt"
+  assert_equals "yes" "$(cat "$home/fake-tasks/$task/held")" "PATH bootstrap still holds the row"
+  pass "fm-eggbot-ingest: ingest finds tasks-axi under HOME/.local/bin"
+}
+
+test_check_shim_bootstraps_home_local_bin() {
+  local home out task=shim-path-task
+  home=$(make_home shim-path)
+  write_event "$home" "week.json" "$(sample_event shim-path-event "$task")"
+  run_ingest "$home" arm >/dev/null || fail "arm must succeed before a shim PATH check"
+  mkdir -p "$home/.local/bin"
+  mv "$home/fakebin/tasks-axi" "$home/.local/bin/tasks-axi"
+  out=$(PATH="$BASE_PATH" HOME="$home" "$home/state/eggbot.check.sh" 2>&1) \
+    || fail "standing check shim must find tasks-axi via HOME/.local/bin: $out"
+  assert_contains "$out" "eggbot: held 1 context-debt task(s)" \
+    "shim PATH bootstrap still holds a task"
+  assert_present "$home/state/eggbot/processed/shim-path-event" \
+    "shim PATH bootstrap writes a receipt"
+  pass "fm-eggbot-ingest: standing check shim finds tasks-axi under HOME/.local/bin"
+}
+
 test_help_and_usage
 test_happy_path_creates_and_holds
 test_reingest_is_idempotent
@@ -495,3 +533,5 @@ test_partial_create_repairs_body_before_receipt
 test_task_id_collision_is_refused
 test_leading_dash_title_is_rejected
 test_disarm_fails_closed_when_record_cannot_be_removed
+test_ingest_bootstraps_home_local_bin
+test_check_shim_bootstraps_home_local_bin
