@@ -599,6 +599,56 @@ A fail-closed poll that already queued a wake, and a timeout, always print so th
 `FM_MAIL_CHECK_BUDGET` (default 15, valid 5..25) bounds one standing poll and is cut down to fit `FM_CHECK_TIMEOUT`.
 `bin/fm-mail-check.sh disarm` removes the standing check.
 
+## Eggbot context-debt ingest (state/eggbot)
+
+Grok Bot "dr eggbot" morning context-debt digests land as versioned JSON in this home's gitignored `state/eggbot/inbox/`, not in a project clone.
+[`bin/fm-eggbot-ingest.sh`](../bin/fm-eggbot-ingest.sh) is the single owner of the schema, atomic drop contract, ingest, and standing check.
+Producers write a complete regular file, then rename it into `state/eggbot/inbox/<name>.json` so ingest never reads a partial object.
+The schema name is the literal `fm-eggbot-context-debt.v1`.
+`event_id` is the idempotency key: a receipt at `state/eggbot/processed/<event_id>` makes a later ingest of the same event a no-op.
+Ingest creates the backlog row through `bin/fm-tasks-axi.sh add` and then holds it with `bin/fm-captain-hold.sh hold --reason`; it never hand-edits `data/backlog.md`.
+Hold reasons must not contain parentheses, matching the captain-hold contract.
+
+Arm the standing check once per home with `bin/fm-eggbot-ingest.sh arm`.
+That creates the inbox and processed directories if needed, writes `state/eggbot.check.sh`, and binds its bytes with `bin/fm-check-register.sh`.
+The watcher then runs ingest when inbox JSON is present and turns a new hold or an ingest failure into a `check:` wake.
+`bin/fm-eggbot-ingest.sh disarm` removes the shim, its trust binding, and the report record, and leaves inbox receipts in place.
+The script header owns exact fields, including DoD evidence for merge-is-not-done, green CI, process-patch or CONTEXT/map `path@commit` closure, changelog-without-code blockers, contract freeze, and thrash of 3 days or 3 repeats.
+
+Example producer payload:
+
+```json
+{
+  "schema": "fm-eggbot-context-debt.v1",
+  "event_id": "fmp-2026-09-14-context-debt",
+  "task_id": "fmp-ctx-debt-2026-09-14",
+  "project": "family-meal-planner",
+  "title": "Close FMP week context and map DoD debt",
+  "kind": "ship",
+  "week": "2026-09-08/14",
+  "source": "dr eggbot",
+  "debt": [
+    {
+      "id": "shopping-correctness",
+      "summary": "shopping-correctness vs code without split",
+      "reason": "merge is not done; need green CI plus CONTEXT/map update path@commit",
+      "dod": {
+        "merge_is_not_done": true,
+        "require_green_ci": true,
+        "closure": {
+          "kind": "context_or_map",
+          "path": "CONTEXT.md",
+          "commit": "deadbeef"
+        },
+        "changelog_without_code": "blocker",
+        "contract_freeze": {"required": true, "name": "Listonic"},
+        "thrash": {"days": 3, "repeats": 3}
+      }
+    }
+  ]
+}
+```
+
 ## Relay (.env)
 
 Relay lets a firstmate instance answer public mentions and act on normal reversible mention requests through firstmate's normal lifecycle.
