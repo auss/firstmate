@@ -392,6 +392,8 @@ test_arm_writes_and_binds_and_disarm_removes() {
   assert_present "$home/state/eggbot/inbox" "arm creates the producer drop path"
   assert_contains "$(cat "$home/state/eggbot.check.sh")" "fm-eggbot-ingest.sh check" \
     "shim dispatches check"
+  # Match the literal shim assignment; HOME is expanded when the check runs.
+  # shellcheck disable=SC2016
   assert_contains "$(cat "$home/state/eggbot.check.sh")" 'export PATH="$HOME/.local/bin:$PATH"' \
     "shim prepends the user install prefix for a bare watcher PATH"
   out=$(run_ingest "$home" arm 2>&1) || fail "re-arm must succeed: $out"
