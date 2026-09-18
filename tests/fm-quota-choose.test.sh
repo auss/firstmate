@@ -27,7 +27,10 @@ NO_APPLICABLE="$LAB/no-applicable.json"
 APPLICABLE_VETO="$LAB/applicable-veto.json"
 MUSE_EXHAUSTED="$LAB/muse-exhausted.json"
 MUSE_POSITIVE="$LAB/muse-positive.json"
+<<<<<<< HEAD
 AGY_EXHAUSTED="$LAB/agy-exhausted.json"
+=======
+>>>>>>> upstream/main
 AGY_POSITIVE="$LAB/agy-positive.json"
 TOON="$LAB/quota.toon"
 RENDERER_TOON="$LAB/renderer-quota.toon"
@@ -249,10 +252,17 @@ fi
 [ "$err" = "error: unknown harness: bogus" ] || fail "unknown harness returned: $err"
 ok "unknown harness fails closed"
 
+<<<<<<< HEAD
 if err=$(call_choose --snapshot "$LAB/captured.json" --candidate claude:default --candidate unknown-harness:default 2>&1); then
   fail "trailing unsupported harness was hidden by an earlier selection"
 fi
 [ "$err" = "error: unknown harness: unknown-harness" ] || fail "trailing unsupported harness returned: $err"
+=======
+if err=$(call_choose --snapshot "$LAB/captured.json" --candidate claude:default --candidate rovo:default 2>&1); then
+  fail "trailing unsupported harness was hidden by an earlier selection"
+fi
+[ "$err" = "error: unknown harness: rovo" ] || fail "trailing unsupported harness returned: $err"
+>>>>>>> upstream/main
 
 if err=$(call_choose --snapshot "$LAB/captured.json" --candidate claude:default --candidate 'claude:' 2>&1); then
   fail "trailing empty model was hidden by an earlier selection"
@@ -555,6 +565,7 @@ ok "Muse uses Meta quota"
 
 jq '.providers += [{"provider":"agy","windows":[],"quotaSemantics":{"status":"known","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":25,"runway":{"status":"through_reset"}}]}}]' \
   "$LAB/captured.json" > "$AGY_POSITIVE"
+<<<<<<< HEAD
 out=$(call_choose --snapshot "$AGY_POSITIVE" --candidate agy:default)
 [ "$out" = "agy default" ] || fail "healthy agy quota returned: $out"
 ok "agy candidate is accepted"
@@ -564,6 +575,13 @@ jq '.providers += [{"provider":"agy","windows":[],"quotaSemantics":{"status":"kn
 out=$(call_choose --snapshot "$AGY_EXHAUSTED" --candidate agy:default --candidate pi:default)
 [ "$out" = "pi default" ] || fail "exhausted agy quota did not select a later candidate: $out"
 ok "exhausted agy quota yields to later candidate"
+=======
+if err=$(call_choose --snapshot "$AGY_POSITIVE" --candidate agy:default 2>&1); then
+  fail "legacy quota chooser unexpectedly accepted Agy"
+fi
+printf '%s\n' "$err" | grep -F 'unknown harness: agy' >/dev/null || fail "legacy Agy rejection changed: $err"
+ok "Agy remains resolver-only"
+>>>>>>> upstream/main
 
 jq '.providers += [.providers[] | select(.provider == "claude")]' "$LAB/captured.json" > "$DUPLICATE"
 if err=$(call_choose --snapshot "$DUPLICATE" --candidate claude:default 2>&1); then

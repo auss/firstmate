@@ -7,7 +7,11 @@ The skill tree rooted at [`.agents/skills/harness-adapters/SKILL.md`](../../.age
 
 | Field | Value |
 |---|---|
+<<<<<<< HEAD
 | Version | `agy 1.2.0`; the send-confirmation timing below was re-measured on `agy 1.2.1` (2026-09-12), and the busy/interrupt surface was re-verified live on `agy 1.2.2` (2026-09-14) |
+=======
+| Version | `agy 1.2.0`; the send-confirmation timing below was re-measured on `agy 1.2.1` (2026-09-12) |
+>>>>>>> upstream/main
 | Verified | 2026-09-10 |
 | Binary | `/home/andpod/.local/bin/agy`, an ELF 64-bit Go-compiled single executable |
 | Platform | Linux x64 (Arch, kernel 7.2.3) |
@@ -106,6 +110,7 @@ The completed turn showed the reply, then the idle composer:
 ? for shortcuts                                                         Gemini 3.8 Flash · low
 ```
 
+<<<<<<< HEAD
 `fm_busy_agy_tail_busy` and the delivery guard in `bin/fm-composer-lib.sh` match the `esc to cancel` token alone on 1.2.0: the TUI pins that status row to the bottom of the pane for the whole turn, and the idle row replaces it with `? for shortcuts`.
 The `Generating...` spinner word is deliberately not a signal: it is a free-floating output line, so ordinary worker output such as `Generating report...` would otherwise classify an idle worker as busy or acknowledge a submit that did not land.
 No busy phase without the status row was observed live; every captured mid-turn frame carried it.
@@ -123,6 +128,11 @@ agy 1.2.2 dropped both 1.2.0 rows: `esc to cancel` and `? for shortcuts` appeare
 The matchers therefore accept the union of both verified surfaces: the 1.2.0 `esc to cancel` token and the 1.2.2 anchored spinner row (braille frame, whitespace, verb, literal `...`).
 The bare verb stays deliberately unmatched on both surfaces for the 1.2.0 reason above, and the settled 1.2.2 mode footer matches neither.
 The opt-in guard `tests/fm-agy-signals-live-e2e.test.sh` caught this drift exactly as designed and passes again on 1.2.2 (busy-in-flight, settled idle, single-Escape interrupt, `/quit` exit).
+=======
+`fm_busy_agy_tail_busy` and the delivery guard in `bin/fm-composer-lib.sh` match the `esc to cancel` token alone: the TUI pins that status row to the bottom of the pane for the whole turn, and the idle row replaces it with `? for shortcuts`.
+The `Generating...` spinner word is deliberately not a signal: it is a free-floating output line, so ordinary worker output such as `Generating report...` would otherwise classify an idle worker as busy or acknowledge a submit that did not land.
+No busy phase without the status row was observed live; every captured mid-turn frame carried it.
+>>>>>>> upstream/main
 `fm_busy_classify` reports `unknown agy-regex` when the token is absent, because a long turn can scroll the marker out of the captured tail.
 The signature is hardcoded with no environment override, so a stray variable can never change worker-state classification.
 Herdr's own registry agreed throughout: `agent get` reported `agent_status=working` mid-turn and `idle` after, so on Herdr the native verdict carries busy with no new code.
@@ -147,6 +157,7 @@ $ herdr agent get w2:p1 --session fm-lab-firstmate-agy-ad-1599574-8823
 
 Herdr tracks agy natively (`antigravity-cli` integration, detected as `agent=agy`), so `fm_backend_herdr_pane_agent_state` returns `live` for every registered agy status and no exit-detection hardening was needed.
 The tmux adapter classifies the anchored process name `agy` as `agent` through the shared name vocabulary in `bin/fm-agent-process-lib.sh`, the muse/omp precedent for short bare-word names.
+<<<<<<< HEAD
 agy is likewise anchored in the session-lock name vocabulary in `bin/fm-session-lock-lib.sh` (`^agy$`, like pi and omp), while the other crewmate-only adapters stay absent.
 
 ## Composer: identity-gated separated verdict
@@ -155,6 +166,15 @@ Byte-level capture of the idle pane shows a bare unstyled `>` between two full-w
 The shared classifier reads that shape like Pi's separated composer: with Herdr's native `agent get` reporting an idle or done agy plus the verified footer row directly below the close rule, the settled composer proves `empty` and typed input stays `pending`; the 1.2.2 mode placeholder is de-emphasised in palette colour 8, which the verdict opts into the shared ghost strip so the placeholder never reads as typed input.
 A turn under way, a dialog, a missing container, or a backend without native identity keeps the shell-like `>` `unknown` under the dead-shell rule, never `empty`.
 Steering on those backends still confirms delivery: the Herdr submit core leads with the native `idle`-to-`working` transition, which agy performs, and the delivery footer regex covers the tmux path.
+=======
+agy stays out of the session-lock name vocabulary in `bin/fm-session-lock-lib.sh`, where the other crewmate-only adapters are also absent.
+
+## Composer: unknown by design
+
+Byte-level capture of the idle pane shows a bare unstyled `>` between two full-width `─` rules, with an unstyled `? for shortcuts` cell and a dim (`SGR 2`) model cell in the status row below.
+The shared classifier reads that bare `>` as `unknown` under the dead-shell rule, never `empty`.
+Steering still confirms delivery: the Herdr submit core leads with the native `idle`-to-`working` transition, which agy performs, and the delivery footer regex covers the tmux path.
+>>>>>>> upstream/main
 agy renders the busy footer late for that confirm loop - about 1.5 s after Enter for a short steer and 4-5 s for a realistic longer brief, measured live on `agy 1.2.1` (2026-09-12) against the shared budget's 3 x 0.4 s - so `bin/fm-send.sh` gives agy typed targets a longer default submit-confirm budget (20 retries, about 8 s at the default cadence); an explicit `FM_SEND_RETRIES` still wins and every other harness keeps the shared 3-retry default.
 `tests/fm-send-agy-confirm.test.sh` pins the raised default and `tests/fm-agy-harness.test.sh` pins the Herdr transition path.
 This is the cursor precedent, not a gap to patch in shared code.
@@ -173,8 +193,12 @@ No automatic quota failover was exercised or claimed; every handoff above was an
 The unauthenticated failure mode was never observed; this host's agy runs signed in, so any auth prompt is a fail-loud credential blocker, not a handled dialog.
 No slash-skill invocation form was verified, so skill invocation stays natural language.
 `--continue` and `--conversation` resume were never exercised; recovery uses deterministic relaunch from the brief on disk.
+<<<<<<< HEAD
 No secondmate behavior was built or tested, and none is claimed.
 The one agy primary surface is `bin/fm-primary-resource.sh`'s main-session quota handover, added after this record; [`runtime-backends.md`](runtime-backends.md) "Primary-resource handover" owns its verification grades.
+=======
+No primary or secondmate behavior was built or tested, and none is claimed.
+>>>>>>> upstream/main
 
 ## Refreshing this record
 

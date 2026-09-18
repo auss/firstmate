@@ -853,6 +853,7 @@ fm_busy_rovo_tail_busy() {
 }
 
 # fm_busy_agy_tail_busy: the AGY-only temporary rendered-tail fallback.
+<<<<<<< HEAD
 # Consumes the tail on stdin; 0 when AGY's verified busy signature matches the
 # status row the TUI pins to the bottom of the pane while a turn runs. Two
 # vendor surfaces are verified live: agy 1.2.0 pinned `esc to cancel` beside
@@ -872,6 +873,20 @@ fm_busy_rovo_tail_busy() {
 fm_busy_agy_tail_busy() {
   grep -v '^[[:space:]]*$' | tail -12 \
     | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel|^[[:space:]]*(⣾|⣽|⣻|⢿|⡿|⣟|⣯|⣷)[[:space:]]+(Working|Generating|Loading)\.\.\.'
+=======
+# Consumes the tail on stdin; 0 when AGY's verified busy signature matches:
+# the `esc to cancel` token in the status row the TUI pins to the bottom of
+# the pane while a turn runs (verified live on agy 1.2.0; the idle status row
+# shows `? for shortcuts` instead). The `Generating...` spinner word that
+# renders beside it is deliberately NOT matched: it is a free-floating output
+# line, so ordinary worker output echoing the word would classify an idle
+# worker as busy. agy exposes no hook surface, so this fallback is the only
+# pane-side source; it is never armed as a semantic writer
+# (fm_busy_sources_for_harness trusts nothing for agy).
+fm_busy_agy_tail_busy() {
+  grep -v '^[[:space:]]*$' | tail -12 \
+    | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel'
+>>>>>>> upstream/main
 }
 
 # fm_busy_classify: semantic classification for a task whose endpoint the

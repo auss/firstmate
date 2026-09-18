@@ -27,9 +27,12 @@
 #      fabricated - exit 1 verdict=unknown.
 #   5. claude target, same late-busy pane: the shared 3-retry default is
 #      untouched, so the send still exits 1 verdict=unknown.
+<<<<<<< HEAD
 #   6. agy target whose busy footer is agy 1.2.2's pinned spinner row instead
 #      of 1.2.0's `esc to cancel` row: the refreshed signature still confirms
 #      idle-to-busy and exits 0.
+=======
+>>>>>>> upstream/main
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -43,10 +46,16 @@ TMP_ROOT=$(fm_test_tmproot fm-send-agy-confirm)
 # records every requested duration (one per line) into FM_SLEEP_LOG instead of
 # sleeping. The styled capture (-e) always shows agy's idle bare-`>` composer
 # (verdict `unknown`); the plain capture - the one fm_pane_busy_state polls -
+<<<<<<< HEAD
 # shows the idle screen until its BUSY_AT-th call and the verified busy row
 # from then on (1.2.0's `esc to cancel` by default, overridable through
 # FM_STUB_BUSY_ROW for the 1.2.2 spinner surface). The BUSY_AT threshold is
 # read from the per-case dir so cases are independent.
+=======
+# shows the idle screen until its BUSY_AT-th call and the verified `esc to
+# cancel` busy row from then on. The BUSY_AT threshold is read from the
+# per-case dir so cases are independent.
+>>>>>>> upstream/main
 make_stubs() {  # <dir> <busy-at> -> echoes fakebin dir
   local dir=$1 busy_at=$2 fb="$1/fakebin"
   mkdir -p "$fb"
@@ -74,7 +83,11 @@ case "\${1:-}" in
     n=\$(( \$(cat "\$cnt_file" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "\$n" > "\$cnt_file"
     if [ "\$n" -ge $busy_at ]; then
+<<<<<<< HEAD
       printf '> \n? for shortcuts\n${FM_STUB_BUSY_ROW:- ⏺ 5s · esc to cancel · gemini-3.8-flash-low}\n'
+=======
+      printf '> \n? for shortcuts\n ⏺ 5s · esc to cancel · gemini-3.8-flash-low\n'
+>>>>>>> upstream/main
     else
       printf '> \n? for shortcuts\n'
     fi
@@ -167,6 +180,7 @@ expect_code 1 "$(printf '%s' "$out" | sed -n 's/^rc //p')" \
   "claude typed send keeps the shared 3-retry default"
 grep -q 'verdict=unknown' "$TMP_ROOT"/*/err || fail "claude typed send: expected verdict=unknown refusal"
 pass "claude typed send: late busy footer still refuses (agy budget is agy-scoped)"
+<<<<<<< HEAD
 
 # agy whose busy footer renders as agy 1.2.2's pinned spinner row instead of
 # 1.2.0's `esc to cancel` row: the refreshed delivery signature must still
@@ -175,3 +189,5 @@ out=$(FM_STUB_BUSY_ROW='⣷  Working...' run_send agy 6)
 expect_code 0 "$(printf '%s' "$out" | sed -n 's/^rc //p')" \
   "agy typed send confirms on the 1.2.2 spinner busy row"
 pass "agy typed send: the 1.2.2 spinner busy row still confirms idle-to-busy"
+=======
+>>>>>>> upstream/main

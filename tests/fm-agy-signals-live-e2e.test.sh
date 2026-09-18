@@ -125,7 +125,11 @@ esac
 idle_settled=
 for _ in $(seq 1 120); do
   screen=$(capture)
+<<<<<<< HEAD
   case "$screen" in *"? for shortcuts"*|*"shift+tab to cycle"*) idle_settled=1; break ;; esac
+=======
+  case "$screen" in *"? for shortcuts"*) idle_settled=1; break ;; esac
+>>>>>>> upstream/main
   sleep 0.5
 done
 [ -n "$idle_settled" ] || fail "the agy composer never settled to its idle footer after the reply"
@@ -144,7 +148,11 @@ if case "$(capture)" in *"Do you trust the contents of this project?"*) true ;; 
     || fail "could not dismiss the residual agy trust dialog"
   idle=
   for _ in $(seq 1 120); do
+<<<<<<< HEAD
     case "$(capture)" in *"? for shortcuts"*|*"shift+tab to cycle"*) idle=1; break ;; esac
+=======
+    case "$(capture)" in *"? for shortcuts"*) idle=1; break ;; esac
+>>>>>>> upstream/main
     sleep 0.5
   done
   [ -n "$idle" ] || fail "the agy composer never went idle after the trust answer"

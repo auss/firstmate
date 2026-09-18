@@ -64,14 +64,27 @@
 # THAT SAME PROJECT ENTRY IS ALSO THE LAUNCHING HUMAN'S OWN INTERACTIVE
 # CONFIG, though, so this registration must never overwrite a decision the
 # human already made there. If the project entry already carries
+<<<<<<< HEAD
 # hasClaudeMdExternalIncludesApproved===false - Claude Code only ever writes
 # that on an explicit "No, disable" answer - the whole registration refuses
+=======
+# hasClaudeMdExternalIncludesApproved===false WITH
+# hasClaudeMdExternalIncludesWarningShown===true - the pair Claude Code writes
+# on an explicit "No, disable" answer - the whole registration refuses
+>>>>>>> upstream/main
 # rather than flipping it, because doing so would grant every future
 # interactive session in that checkout silent external-file inclusion the
 # human declined, permanently and without being asked. The worktree entry is
 # left unwritten too: the spawn wedges on the dialog, which is the honest
 # outcome given a standing decline, not registered trust with a stripped
+<<<<<<< HEAD
 # consent record.
+=======
+# consent record. Approved===false with WarningShown false or absent is NOT
+# that decision: Claude Code's default project entry carries both flags as
+# false before the dialog was ever shown, so that pair means "never asked" and
+# is treated like an absent flag - trust registered, no import consent.
+>>>>>>> upstream/main
 #
 # THE SCOPE TEST IS THE SAFETY PROPERTY, and it is STRUCTURAL rather than a
 # path policy. Each mode has its own, because the two directories have entirely
@@ -392,7 +405,11 @@ fi
 # The two external-imports flags (worktree mode only) are gated separately
 # from the trust flag, because they are a CONSENT grant, not a pre-approval
 # this script is allowed to manufacture. Claude Code only ever writes
+<<<<<<< HEAD
 # hasClaudeMdExternalIncludesApproved itself, on an explicit interactive
+=======
+# hasClaudeMdExternalIncludesApproved===true itself, on an explicit interactive
+>>>>>>> upstream/main
 # answer; this script's own job is to keep a worker from wedging on a dialog,
 # never to answer that dialog on the human's behalf. So the import flags land
 # on the project entry - the only place the imports check ever reads (see the
@@ -443,14 +460,26 @@ const flagsLanded = (projects, key, flags) =>
 // The project entry is the launching user's OWN interactive config, not a
 // throwaway worktree, so a spawn must never silently reverse a decision the
 // human already recorded there. hasClaudeMdExternalIncludesApproved===false
+<<<<<<< HEAD
 // is exactly that decision (Claude Code only ever writes it on an explicit
 // "No, disable" answer); flipping it to true would grant every future
+=======
+// together with hasClaudeMdExternalIncludesWarningShown===true is exactly that
+// decision (the dialog's "No, disable" answer writes that pair; Claude Code's
+// default project entry carries Approved===false with WarningShown===false,
+// which means never asked, not declined); flipping it to true would grant every future
+>>>>>>> upstream/main
 // interactive session in that checkout silent external-file inclusion the
 // human declined. Refuse the whole registration instead of overriding it -
 // the worktree entry is not written either, so the spawn wedges on the
 // dialog rather than the human's consent being spent without being asked.
 const declinedExternalImports = (projects, key) =>
+<<<<<<< HEAD
   projects?.[key]?.hasClaudeMdExternalIncludesApproved === false;
+=======
+  projects?.[key]?.hasClaudeMdExternalIncludesApproved === false &&
+  projects?.[key]?.hasClaudeMdExternalIncludesWarningShown === true;
+>>>>>>> upstream/main
 // True only on an explicit prior "Yes, allow" answer - the sole state this
 // script may treat as standing consent to refresh. Absent, or any other
 // value, is NOT consent (see the block comment above this script's node call).
