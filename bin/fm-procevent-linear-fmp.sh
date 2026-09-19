@@ -156,6 +156,25 @@ journal_record() {
   mv -f -- "$tmp" "$1"
 }
 
+failure_count() {
+  local failures
+  failures=$(cat "$JOURNAL_DIR/.failures" 2>/dev/null) || failures=0
+  case "$failures" in ''|*[!0-9]*) failures=0 ;; esac
+  printf '%s\n' "$failures"
+}
+
+record_failure_count() {
+  local failures=$1 tmp
+  if [ "$failures" -eq 0 ]; then
+    rm -f -- "$JOURNAL_DIR/.failures"
+    return 0
+  fi
+  ( umask 077; mkdir -p "$JOURNAL_DIR" ) || return 1
+  tmp=$(umask 077; mktemp "$JOURNAL_DIR/.failures.XXXXXX") || return 1
+  if ! printf '%s\n' "$failures" > "$tmp"; then rm -f -- "$tmp"; return 1; fi
+  mv -f -- "$tmp" "$JOURNAL_DIR/.failures"
+}
+
 # delivery_id_of <json-line>
 delivery_id_of() { printf '%s\n' "$1" | jq -r '.delivery_id // empty' 2>/dev/null; }
 
@@ -217,7 +236,8 @@ cmd_poll() {
   done
   [ -n "$root" ] || die "poll needs --root"
   validate_root "$root"
-  local failures=0 rc_poll rc_ready line delivery journal age summary poll_err ready_err
+  local failures rc_poll rc_ready line delivery journal age summary poll_err ready_err
+  failures=$(failure_count)
   while :; do
     rc_poll=0
     rc_ready=0
@@ -231,6 +251,31 @@ cmd_poll() {
     run_triage "$root" 120 ready
     rc_ready=$?
     ready_err=$TRIAGE_ERR
+    if [ "$rc_poll" -ne 0 ] || [ "$rc_ready" -ne 0 ]; then
+      failures=$((failures + 1))
+    else
+      failures=0
+    fi
+    if ! record_failure_count "$failures"; then
+      printf '%s: %s\n' "$ADAPTER" "$CANONICAL_SOURCE_ID"
+      printf 'status: error\n'
+      printf 'error: cannot persist poll failure count\n'
+      printf 'poll_failures: %s\n' "$failures"
+      exit 0
+    fi
+    if [ "$failures" -ge "$budget" ]; then
+      printf '%s: %s\n' "$ADAPTER" "$CANONICAL_SOURCE_ID"
+      printf 'status: error\n'
+      if [ "$rc_ready" -ne 0 ]; then
+        printf 'error: %s\n' "${ready_err:-triage ready failed without detail}"
+        printf 'last_exit: %s\n' "$rc_ready"
+      else
+        printf 'error: %s\n' "${poll_err:-triage poll failed without detail}"
+        printf 'last_exit: %s\n' "$rc_poll"
+      fi
+      printf 'poll_failures: %s\n' "$failures"
+      exit 0
+    fi
     if [ "$rc_ready" -eq 0 ] && [ -n "$TRIAGE_OUT" ]; then
       while IFS= read -r line; do
         [ -n "$line" ] || continue
@@ -250,24 +295,6 @@ cmd_poll() {
       done <<EOF
 $TRIAGE_OUT
 EOF
-    fi
-    if [ "$rc_poll" -ne 0 ] || [ "$rc_ready" -ne 0 ]; then
-      failures=$((failures + 1))
-    else
-      failures=0
-    fi
-    if [ "$failures" -ge "$budget" ]; then
-      printf '%s: %s\n' "$ADAPTER" "$CANONICAL_SOURCE_ID"
-      printf 'status: error\n'
-      if [ "$rc_ready" -ne 0 ]; then
-        printf 'error: %s\n' "${ready_err:-triage ready failed without detail}"
-        printf 'last_exit: %s\n' "$rc_ready"
-      else
-        printf 'error: %s\n' "${poll_err:-triage poll failed without detail}"
-        printf 'last_exit: %s\n' "$rc_poll"
-      fi
-      printf 'poll_failures: %s\n' "$failures"
-      exit 0
     fi
     sleep "$interval"
   done

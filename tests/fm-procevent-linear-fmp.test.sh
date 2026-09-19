@@ -203,6 +203,27 @@ printf '%s\n' "$ready_error_out" | grep -qx 'last_exit: 3' \
   || fail "ready error result misreported the exit"
 ok "repeated ready failure captures its operational cause"
 
+rm -rf "$JOURNAL_DIR"
+: > "$RECEIPTS"
+printf '%s\n' "$EVENT_ONE" > "$READY_FILE"
+for attempt in 1 2 3 4 5; do
+  replay_failure_out=$(FAKE_POLL_RC=2 fm_run_timed 30 env FM_HOME="$LAB" "$FM_LFP" poll --root "$TRIAGE" --interval 3600 --replay 1800 --error-budget 5) \
+    || fail "replayed failure attempt $attempt exited nonzero"
+  if [ "$attempt" -lt 5 ]; then
+    printf '%s\n' "$replay_failure_out" | grep -qx 'status: ready' \
+      || fail "replayed failure attempt $attempt did not preserve ready delivery"
+    journal=$(ls -1 "$JOURNAL_DIR"/*.emitted 2>/dev/null | head -1)
+    [ -n "$journal" ] || fail "replayed failure attempt $attempt did not journal delivery"
+    printf '%s\n' "$(( $(date +%s) - 1801 ))" > "$journal"
+  fi
+done
+printf '%s\n' "$replay_failure_out" | grep -qx 'status: error' \
+  || fail "replayed ready delivery reset the poll failure budget"
+printf '%s\n' "$replay_failure_out" | grep -qx 'poll_failures: 5' \
+  || fail "replayed ready delivery miscounted poll failures"
+unset FAKE_POLL_RC
+ok "replayed ready delivery preserves the poll failure budget"
+
 # classify, terminal, and read over captured result documents.
 INBOX="$LAB/state/procevent-inbox"
 mkdir -p "$INBOX"
