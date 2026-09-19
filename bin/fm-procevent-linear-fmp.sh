@@ -30,8 +30,11 @@
 #            seconds), so a crash between intake and receipt replays the ticket
 #            without flooding wakes. When --error-budget consecutive poll or
 #            ready passes fail (default 5), the child captures one operational
-#            error result and exits; that verdict is terminal, so the watch
-#            retires itself and re-arming is a deliberate operator action.
+#            error result and exits. The count is durable across replacement
+#            children and ready replays, resets after a successful pass, and
+#            starts fresh only when arming a retired watch; re-arming a live
+#            watch preserves it. That verdict is terminal, so the watch retires
+#            itself and re-arming is a deliberate operator action.
 # ready      Print the poller's current unreceipted ready events, one JSON line
 #            each, straight through the triage CLI. Asking the source beats
 #            parsing queued wakes.
