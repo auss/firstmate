@@ -40,6 +40,10 @@ def main():
             print("poll: scanned=3 evaluated=1 ready=1")
         return rc
     if command == "ready":
+        rc = int(os.environ.get("FAKE_READY_RC", "0"))
+        if rc:
+            print("outbox read failed: permission denied", file=sys.stderr)
+            return rc
         path = os.environ.get("FAKE_READY_FILE", "")
         receipts = os.environ.get("FAKE_RECEIPTS", "")
         closed = set()
@@ -189,6 +193,15 @@ printf '%s\n' "$error_out" | grep -qx 'poll_failures: 2' || fail "error result m
 printf '%s\n' "$error_out" | grep -qx 'last_exit: 2' || fail "error result misreported the exit"
 unset FAKE_POLL_RC
 ok "repeated poller failure captures one typed operational error"
+
+# A ready/outbox failure must retain its own diagnostic, not poll's success.
+ready_error_out=$(FAKE_READY_RC=3 fm_run_timed 60 env FM_HOME="$LAB" "$FM_LFP" poll --root "$TRIAGE" --interval 1 --replay 3600 --error-budget 2) \
+  || fail "ready error-budget poll exited nonzero"
+printf '%s\n' "$ready_error_out" | grep -q '^error: .*outbox read failed' \
+  || fail "ready error result omitted the outbox cause"
+printf '%s\n' "$ready_error_out" | grep -qx 'last_exit: 3' \
+  || fail "ready error result misreported the exit"
+ok "repeated ready failure captures its operational cause"
 
 # classify, terminal, and read over captured result documents.
 INBOX="$LAB/state/procevent-inbox"

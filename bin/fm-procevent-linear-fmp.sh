@@ -217,18 +217,20 @@ cmd_poll() {
   done
   [ -n "$root" ] || die "poll needs --root"
   validate_root "$root"
-  local failures=0 rc_poll rc_ready line delivery journal age summary poll_err
+  local failures=0 rc_poll rc_ready line delivery journal age summary poll_err ready_err
   while :; do
     rc_poll=0
     rc_ready=0
     summary=
     poll_err=
+    ready_err=
     run_triage "$root" "$poll_timeout" poll
     rc_poll=$?
     poll_err=$TRIAGE_ERR
     [ -z "$TRIAGE_OUT" ] || summary=$(printf '%s\n' "$TRIAGE_OUT" | awk 'NF { line = $0 } END { print line }' | cut -c1-300)
     run_triage "$root" 120 ready
     rc_ready=$?
+    ready_err=$TRIAGE_ERR
     if [ "$rc_ready" -eq 0 ] && [ -n "$TRIAGE_OUT" ]; then
       while IFS= read -r line; do
         [ -n "$line" ] || continue
@@ -257,8 +259,13 @@ EOF
     if [ "$failures" -ge "$budget" ]; then
       printf '%s: %s\n' "$ADAPTER" "$CANONICAL_SOURCE_ID"
       printf 'status: error\n'
-      printf 'error: %s\n' "${poll_err:-triage poll failed without detail}"
-      printf 'last_exit: %s\n' "$rc_poll"
+      if [ "$rc_ready" -ne 0 ]; then
+        printf 'error: %s\n' "${ready_err:-triage ready failed without detail}"
+        printf 'last_exit: %s\n' "$rc_ready"
+      else
+        printf 'error: %s\n' "${poll_err:-triage poll failed without detail}"
+        printf 'last_exit: %s\n' "$rc_poll"
+      fi
       printf 'poll_failures: %s\n' "$failures"
       exit 0
     fi
