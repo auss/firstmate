@@ -863,6 +863,11 @@ A repo update that fast-forwards an in-repo action's bytes in place would otherw
 Every failure path - a mutated spec or action executable, a condition error past its budget, an expired deadline, a failed action, or an earlier fire whose outcome was never captured - produces a terminal captured outcome that wakes firstmate rather than a silent retry, and a durable single-fire marker claimed before the action makes restarts and re-polls unable to fire it twice.
 The adapter automates only the exact deterministic subset: anything needing judgment, and anything destructive, irreversible, or security-sensitive, keeps the ordinary check-fires-then-firstmate-decides flow, and the adapter's header and `--help` own its commands, flags, and outcome document.
 
+The `linear-fmp` adapter (`bin/fm-procevent-linear-fmp.sh`) is the Firstmate half of the FMP Linear triage plan: its registered child runs the landed `projects/fmp-bugpin-triage` poller against Linear team FMP on an interval, captures one agent-ready ticket per result, and leaves score-0 clarifications on the poller's own Telegram route where they never wake firstmate.
+An unreceipted ticket is re-emitted at most once per replay window until the adapter's `receipt` closes the poller's outbox row after durable intake, so a crash between intake and receipt replays the ticket without flooding wakes; the runner's own guarantees still stop at capture, and nothing here promises exactly-once intake.
+Repeated poller failure past an error budget captures one terminal error verdict that retires the watch, so re-arming is a deliberate decision made at that wake.
+No payload field carries dispatch, merge, or delivery-mode authority; every intake decision stays with firstmate.
+
 This section is the single owner of the runner's operating contract.
 Process-event commands resolve the state root to its physical directory before validating it and deriving paths, so a home reached through a symlinked ancestor behaves like its physical spelling while an unsafe target directory remains refused.
 Registration writes one private record under `state/procevent/`, and a completed result plus its immutable adapter identity are captured under `state/procevent-inbox/` before any announcement or event can reference it.

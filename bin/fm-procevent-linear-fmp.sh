@@ -64,6 +64,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 ADAPTER=linear-fmp
 CANONICAL_SOURCE_ID=linear-fmp
@@ -215,13 +217,15 @@ cmd_poll() {
   done
   [ -n "$root" ] || die "poll needs --root"
   validate_root "$root"
-  local failures=0 rc_poll rc_ready line delivery journal age summary
+  local failures=0 rc_poll rc_ready line delivery journal age summary poll_err
   while :; do
     rc_poll=0
     rc_ready=0
     summary=
+    poll_err=
     run_triage "$root" "$poll_timeout" poll
     rc_poll=$?
+    poll_err=$TRIAGE_ERR
     [ -z "$TRIAGE_OUT" ] || summary=$(printf '%s\n' "$TRIAGE_OUT" | awk 'NF { line = $0 } END { print line }' | cut -c1-300)
     run_triage "$root" 120 ready
     rc_ready=$?
@@ -253,7 +257,7 @@ EOF
     if [ "$failures" -ge "$budget" ]; then
       printf '%s: %s\n' "$ADAPTER" "$CANONICAL_SOURCE_ID"
       printf 'status: error\n'
-      printf 'error: %s\n' "${TRIAGE_ERR:-triage poll failed without detail}"
+      printf 'error: %s\n' "${poll_err:-triage poll failed without detail}"
       printf 'last_exit: %s\n' "$rc_poll"
       printf 'poll_failures: %s\n' "$failures"
       exit 0
