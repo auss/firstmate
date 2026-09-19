@@ -216,6 +216,7 @@ cmd_arm() {
   "$SCRIPT_DIR/fm-procevent.sh" register "$ADAPTER" "$CANONICAL_SOURCE_ID" \
     -- "$SCRIPT_DIR/fm-procevent-linear-fmp.sh" poll --root "$root" --interval "$interval" \
       --poll-timeout "$poll_timeout" --replay "$replay" --error-budget "$budget" || exit 1
+  record_failure_count 0 || die "cannot clear prior poll failure count"
   printf 'armed: %s\n' "$CANONICAL_SOURCE_ID"
   printf 'root: %s\n' "$root"
   printf 'interval: %ss\n' "$interval"

@@ -224,6 +224,15 @@ printf '%s\n' "$replay_failure_out" | grep -qx 'poll_failures: 5' \
 unset FAKE_POLL_RC
 ok "replayed ready delivery preserves the poll failure budget"
 
+"$FM_LFP" arm --root "$TRIAGE" --interval 1 --error-budget 2 >/dev/null \
+  || fail "re-arm after terminal failure failed"
+rearmed_failure_out=$(FAKE_POLL_RC=2 fm_run_timed 60 env FM_HOME="$LAB" "$FM_LFP" poll --root "$TRIAGE" --interval 1 --replay 3600 --error-budget 2) \
+  || fail "re-armed error-budget poll exited nonzero"
+printf '%s\n' "$rearmed_failure_out" | grep -qx 'poll_failures: 2' \
+  || fail "re-arm inherited the prior terminal failure count"
+unset FAKE_POLL_RC
+ok "re-arm starts with a fresh poll failure budget"
+
 # classify, terminal, and read over captured result documents.
 INBOX="$LAB/state/procevent-inbox"
 mkdir -p "$INBOX"
