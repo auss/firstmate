@@ -1,0 +1,5 @@
+linear-fmp: linear-fmp
+status: error
+error: Linear API unavailable for live errror scenario
+last_exit: 7
+poll_failures: 2

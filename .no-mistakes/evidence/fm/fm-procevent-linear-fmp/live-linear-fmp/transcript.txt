@@ -1,0 +1,52 @@
+=== READY: arm and generic runner capture ===
+registered: linear-fmp (linear-fmp)
+armed: linear-fmp
+root: /home/marcin/.no-mistakes/evidence/01M2XAFXW5YMMKNXPWQYJJ8D5N/live-linear-fmp/ready/triage
+interval: 1s
+reminder: a ready ticket is intake evidence only; this adapter never spawns ships or merges
+not-autohandled: linear-fmp (left for the handler; still unacknowledged)
+captured: /home/marcin/.no-mistakes/evidence/01M2XAFXW5YMMKNXPWQYJJ8D5N/live-linear-fmp/ready/state/procevent-inbox/linear-fmp.1.result
+-- captured result --
+linear-fmp: linear-fmp
+status: ready
+delivery_id: fmp:live-42:hash:readiness-v1
+poll_summary: poll: scanned=1 evaluated=1 ready=1
+ready: {"schema_version":1,"delivery_id":"fmp:live-42:hash:readiness-v1","issue":{"id":"live-42","title":"Live wake evidence"},"evaluation":{"score":1}}
+-- supervisor wake queue --
+1789840233	1	check	procevent:linear-fmp:1	check: procevent linear-fmp linear-fmp 1
+-- captain intake summary --
+kind: linear-fmp-ready
+status: ready
+delivery_id: fmp:live-42:hash:readiness-v1
+issue: live-42
+url: 
+title: Live wake evidence
+what_wrong: 
+intended: 
+page_path: 
+score: 1
+probability: 
+policy_version: 
+-- receipt then handled --
+receipt recorded for fmp:live-42:hash:readiness-v1
+handled: linear-fmp 1
+retired: linear-fmp
+=== ERROR: arm and generic runner terminal capture ===
+error: process-event state root is not a private directory
+=== ERROR: arm and generic runner terminal capture (re-drive) ===
+registered: linear-fmp (linear-fmp)
+armed: linear-fmp
+root: /home/marcin/.no-mistakes/evidence/01M2XAFXW5YMMKNXPWQYJJ8D5N/live-linear-fmp/error/triage
+interval: 1s
+reminder: a ready ticket is intake evidence only; this adapter never spawns ships or merges
+not-autohandled: linear-fmp (left for the handler; still unacknowledged)
+retired: linear-fmp (adapter classified the captured result terminal)
+captured: /home/marcin/.no-mistakes/evidence/01M2XAFXW5YMMKNXPWQYJJ8D5N/live-linear-fmp/error/state/procevent-inbox/linear-fmp.1.result
+-- terminal result --
+linear-fmp: linear-fmp
+status: error
+error: Linear API unavailable for live errror scenario
+last_exit: 7
+poll_failures: 2
+-- registration after terminal verdict --
+terminal verdict retired linear-fmp registration

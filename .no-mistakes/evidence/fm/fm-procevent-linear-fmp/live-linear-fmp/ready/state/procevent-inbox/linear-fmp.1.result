@@ -1,0 +1,5 @@
+linear-fmp: linear-fmp
+status: ready
+delivery_id: fmp:live-42:hash:readiness-v1
+poll_summary: poll: scanned=1 evaluated=1 ready=1
+ready: {"schema_version":1,"delivery_id":"fmp:live-42:hash:readiness-v1","issue":{"id":"live-42","title":"Live wake evidence"},"evaluation":{"score":1}}
