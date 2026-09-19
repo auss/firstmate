@@ -113,7 +113,7 @@ ok "source-id prints the canonical id"
 # arm: default root resolution, real registration, then retire.
 mkdir -p "$LAB/projects"
 make_fake_triage "$LAB/projects/fmp-bugpin-triage"
-arm_out=$(FM_LINEAR_FMP_ROOT= "$FM_LFP" arm --interval 60) || fail "arm failed: $arm_out"
+arm_out=$(FM_LINEAR_FMP_ROOT='' "$FM_LFP" arm --interval 60) || fail "arm failed: $arm_out"
 printf '%s\n' "$arm_out" | grep -qx 'armed: linear-fmp' || fail "arm did not report armed"
 printf '%s\n' "$arm_out" | grep -q 'never spawns ships' \
   || fail "arm omitted the no-dispatch reminder"
@@ -173,7 +173,8 @@ printf '%s\n' "$poll_out" | grep -qx 'delivery_id: fmp:uuid-42:hash-one:readines
   || fail "poll emitted more than one ready payload"
 printf '%s\n' "$poll_out" | grep -q '^poll_summary: poll: scanned=' \
   || fail "poll omitted the bounded poll summary"
-[ "$(ls -1 "$JOURNAL_DIR" 2>/dev/null | grep -c '\.emitted$')" = 1 ] \
+journal_count=$(find "$JOURNAL_DIR" -maxdepth 1 -type f -name '*.emitted' -print | wc -l)
+[ "$journal_count" = 1 ] \
   || fail "poll did not journal its emission"
 ok "poll captures exactly one ready event per result"
 
@@ -185,7 +186,7 @@ suppressed_rc=$?
 [ -z "$suppressed" ] || fail "suppressed poll emitted output inside the replay window"
 ok "poll stays silent inside the replay window"
 
-journal=$(ls -1 "$JOURNAL_DIR"/*.emitted 2>/dev/null | head -1)
+journal=$(find "$JOURNAL_DIR" -maxdepth 1 -type f -name '*.emitted' -print -quit)
 [ -n "$journal" ] || fail "no journal file to age"
 printf '%s\n' "$(( $(date +%s) - 7200 ))" > "$journal"
 replay_out=$(fm_run_timed 60 env FM_HOME="$LAB" "$FM_LFP" poll --root "$TRIAGE" --interval 1 --replay 3600) \
@@ -241,7 +242,7 @@ for attempt in 1 2 3 4 5; do
   if [ "$attempt" -lt 5 ]; then
     printf '%s\n' "$replay_failure_out" | grep -qx 'status: ready' \
       || fail "replayed failure attempt $attempt did not preserve ready delivery"
-    journal=$(ls -1 "$JOURNAL_DIR"/*.emitted 2>/dev/null | head -1)
+    journal=$(find "$JOURNAL_DIR" -maxdepth 1 -type f -name '*.emitted' -print -quit)
     [ -n "$journal" ] || fail "replayed failure attempt $attempt did not journal delivery"
     printf '%s\n' "$(( $(date +%s) - 1801 ))" > "$journal"
   fi
