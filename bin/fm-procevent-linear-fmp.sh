@@ -98,9 +98,12 @@ resolve_root() {
 # The checkout must be a real directory carrying the triage package.
 validate_root() {
   local root=$1
-  [ -d "$root" ] && [ ! -L "$root" ] || die "triage checkout is not a real directory: $root"
-  [ -f "$root/fmp_bugpin_triage/cli.py" ] && [ ! -L "$root/fmp_bugpin_triage/cli.py" ] \
-    || die "no fmp_bugpin_triage package under: $root"
+  root_valid "$root" || die "triage checkout is unavailable: $root"
+}
+
+root_valid() {  # <root>
+  [ -d "$1" ] && [ ! -L "$1" ] \
+    && [ -f "$1/fmp_bugpin_triage/cli.py" ] && [ ! -L "$1/fmp_bugpin_triage/cli.py" ]
 }
 
 # triage_cli <root> <timeout-secs> <command...>
@@ -150,7 +153,7 @@ journal_age_seconds() {
 journal_record() {
   local dir tmp
   dir=$(dirname "$1")
-  ( umask 077; mkdir -p "$dir" ) || return 1
+  ( umask 077; mkdir -p "$dir" ) 2>/dev/null || return 1
   tmp=$(umask 077; mktemp "$dir/.emitted.XXXXXX") || return 1
   if ! date +%s > "$tmp"; then rm -f -- "$tmp"; return 1; fi
   mv -f -- "$tmp" "$1"
@@ -196,7 +199,7 @@ cmd_ready() {
 }
 
 cmd_arm() {
-  local root='' interval=$DEFAULT_INTERVAL poll_timeout=$DEFAULT_POLL_TIMEOUT replay=$DEFAULT_REPLAY budget=$DEFAULT_ERROR_BUDGET
+  local root='' interval=$DEFAULT_INTERVAL poll_timeout=$DEFAULT_POLL_TIMEOUT replay=$DEFAULT_REPLAY budget=$DEFAULT_ERROR_BUDGET registered_before=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --root)         [ "$#" -ge 2 ] || die "--root needs a path"; root=$2; shift 2 ;;
@@ -213,10 +216,15 @@ cmd_arm() {
   command -v python3 >/dev/null 2>&1 || die "python3 is not available"
   ( cd "$root" && fm_run_timed 30 python3 -c 'import fmp_bugpin_triage' ) >/dev/null 2>&1 \
     || die "the triage package does not import under python3: $root"
+  command -v jq >/dev/null 2>&1 || die "jq is not available"
+  command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1 \
+    || die "shasum or sha256sum is not available"
+  [ -f "$STATE/procevent/$CANONICAL_SOURCE_ID.source" ] \
+    && [ ! -L "$STATE/procevent/$CANONICAL_SOURCE_ID.source" ] && registered_before=1
   "$SCRIPT_DIR/fm-procevent.sh" register "$ADAPTER" "$CANONICAL_SOURCE_ID" \
     -- "$SCRIPT_DIR/fm-procevent-linear-fmp.sh" poll --root "$root" --interval "$interval" \
       --poll-timeout "$poll_timeout" --replay "$replay" --error-budget "$budget" || exit 1
-  record_failure_count 0 || die "cannot clear prior poll failure count"
+  [ "$registered_before" -eq 1 ] || record_failure_count 0 || die "cannot clear prior poll failure count"
   printf 'armed: %s\n' "$CANONICAL_SOURCE_ID"
   printf 'root: %s\n' "$root"
   printf 'interval: %ss\n' "$interval"
@@ -236,7 +244,6 @@ cmd_poll() {
     esac
   done
   [ -n "$root" ] || die "poll needs --root"
-  validate_root "$root"
   local failures rc_poll rc_ready line delivery journal age summary poll_err ready_err
   failures=$(failure_count)
   while :; do
@@ -245,13 +252,20 @@ cmd_poll() {
     summary=
     poll_err=
     ready_err=
-    run_triage "$root" "$poll_timeout" poll
-    rc_poll=$?
-    poll_err=$TRIAGE_ERR
-    [ -z "$TRIAGE_OUT" ] || summary=$(printf '%s\n' "$TRIAGE_OUT" | awk 'NF { line = $0 } END { print line }' | cut -c1-300)
-    run_triage "$root" 120 ready
-    rc_ready=$?
-    ready_err=$TRIAGE_ERR
+    if root_valid "$root"; then
+      run_triage "$root" "$poll_timeout" poll
+      rc_poll=$?
+      poll_err=$TRIAGE_ERR
+      [ -z "$TRIAGE_OUT" ] || summary=$(printf '%s\n' "$TRIAGE_OUT" | awk 'NF { line = $0 } END { print line }' | cut -c1-300)
+      run_triage "$root" 120 ready
+      rc_ready=$?
+      ready_err=$TRIAGE_ERR
+    else
+      rc_poll=1
+      rc_ready=1
+      poll_err="triage checkout is unavailable: $root"
+      ready_err=$poll_err
+    fi
     if [ "$rc_poll" -ne 0 ] || [ "$rc_ready" -ne 0 ]; then
       failures=$((failures + 1))
     else
@@ -283,10 +297,23 @@ cmd_poll() {
         delivery=$(delivery_id_of "$line") || delivery=
         [ -n "$delivery" ] || continue
         journal=$(journal_file "$delivery") || journal=
+        if [ -z "$journal" ]; then
+          printf '%s: %s\n' "$ADAPTER" "$CANONICAL_SOURCE_ID"
+          printf 'status: error\n'
+          printf 'error: cannot derive ready delivery replay marker\n'
+          printf 'poll_failures: %s\n' "$failures"
+          exit 0
+        fi
         age=999999999
-        [ -z "$journal" ] || age=$(journal_age_seconds "$journal")
+        age=$(journal_age_seconds "$journal")
         if [ "$age" -lt "$replay" ]; then continue; fi
-        [ -z "$journal" ] || journal_record "$journal" || true
+        if ! journal_record "$journal"; then
+          printf '%s: %s\n' "$ADAPTER" "$CANONICAL_SOURCE_ID"
+          printf 'status: error\n'
+          printf 'error: cannot record ready delivery replay marker\n'
+          printf 'poll_failures: %s\n' "$failures"
+          exit 0
+        fi
         printf '%s: %s\n' "$ADAPTER" "$CANONICAL_SOURCE_ID"
         printf 'status: ready\n'
         printf 'delivery_id: %s\n' "$delivery"

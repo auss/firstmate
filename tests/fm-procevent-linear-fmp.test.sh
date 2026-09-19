@@ -133,6 +133,35 @@ if "$FM_LFP" arm --root "$LAB/empty-root" 2>/dev/null; then
 fi
 ok "arm refuses a checkout without the triage package"
 
+# The command only arms when every runtime dependency for delivery exists.
+make_tool_path() {  # <dir> [extra command...]
+  local dir=$1 tool
+  shift
+  mkdir -p "$dir"
+  for tool in bash dirname python3 mktemp sleep cat rm "$@"; do
+    ln -s "/usr/bin/$tool" "$dir/$tool"
+  done
+}
+
+NO_JQ_PATH="$LAB/no-jq-path"
+make_tool_path "$NO_JQ_PATH"
+if env PATH="$NO_JQ_PATH" FM_TIMEOUT_MECHANISM_OVERRIDE=bash "$FM_LFP" arm --root "$TRIAGE" 2>&1 \
+  | grep -q 'jq is not available'; then
+  :
+else
+  fail "arm did not reject a missing jq"
+fi
+
+NO_SHA_PATH="$LAB/no-sha-path"
+make_tool_path "$NO_SHA_PATH" jq
+if env PATH="$NO_SHA_PATH" FM_TIMEOUT_MECHANISM_OVERRIDE=bash "$FM_LFP" arm --root "$TRIAGE" 2>&1 \
+  | grep -q 'shasum or sha256sum is not available'; then
+  :
+else
+  fail "arm did not reject a missing SHA provider"
+fi
+ok "arm verifies ready delivery dependencies"
+
 # poll: one ready event per capture, with journal suppression and replay.
 printf '%s\n%s\n' "$EVENT_ONE" "$EVENT_TWO" > "$READY_FILE"
 poll_out=$(fm_run_timed 60 env FM_HOME="$LAB" "$FM_LFP" poll --root "$TRIAGE" --interval 1 --replay 3600) \
@@ -233,6 +262,19 @@ printf '%s\n' "$rearmed_failure_out" | grep -qx 'poll_failures: 2' \
 unset FAKE_POLL_RC
 ok "re-arm starts with a fresh poll failure budget"
 
+# Re-arming an active source preserves the current failure episode.
+printf '1\n' > "$JOURNAL_DIR/.failures"
+rm -f "$JOURNAL_DIR"/*.emitted
+printf '%s\n' "$EVENT_ONE" > "$READY_FILE"
+"$FM_LFP" arm --root "$TRIAGE" --interval 3600 --replay 1800 --error-budget 2 >/dev/null \
+  || fail "active re-arm failed"
+active_rearm_out=$(FAKE_POLL_RC=2 fm_run_timed 30 env FM_HOME="$LAB" "$FM_LFP" poll --root "$TRIAGE" --interval 3600 --replay 1800 --error-budget 2) \
+  || fail "active re-arm poll exited nonzero"
+printf '%s\n' "$active_rearm_out" | grep -qx 'status: error' \
+  || fail "active re-arm reset the failure budget"
+unset FAKE_POLL_RC
+ok "active re-arm preserves the poll failure budget"
+
 # classify, terminal, and read over captured result documents.
 INBOX="$LAB/state/procevent-inbox"
 mkdir -p "$INBOX"
@@ -283,5 +325,28 @@ ready_lines=$(FM_HOME="$LAB" "$FM_LFP" ready --root "$TRIAGE") || fail "ready pa
 [ "$(printf '%s\n' "$ready_lines" | grep -c '"delivery_id"')" = 2 ] \
   || fail "ready passthrough dropped events"
 ok "ready passthrough lists unreceipted events"
+
+# A ready result is never emitted unless its replay marker is durable.
+rm -rf "$JOURNAL_DIR"
+printf 'not a directory\n' > "$JOURNAL_DIR"
+printf '%s\n' "$EVENT_ONE" > "$READY_FILE"
+journal_error_out=$(fm_run_timed 30 env FM_HOME="$LAB" "$FM_LFP" poll --root "$TRIAGE" --interval 1 --replay 1800) \
+  || fail "journal failure poll exited nonzero"
+printf '%s\n' "$journal_error_out" | grep -qx 'status: error' \
+  || fail "journal failure did not capture an error"
+printf '%s\n' "$journal_error_out" | grep -qx 'error: cannot record ready delivery replay marker' \
+  || fail "journal failure reported a ready delivery"
+ok "journal failure captures an operational error"
+
+# A checkout that disappears after arm is reported through the failure budget.
+rm -f "$JOURNAL_DIR"
+rm -rf "$TRIAGE"
+root_error_out=$(fm_run_timed 30 env FM_HOME="$LAB" "$FM_LFP" poll --root "$TRIAGE" --interval 1 --error-budget 2) \
+  || fail "missing checkout poll exited nonzero"
+printf '%s\n' "$root_error_out" | grep -qx 'status: error' \
+  || fail "missing checkout did not capture an error"
+printf '%s\n' "$root_error_out" | grep -q '^error: triage checkout is unavailable:' \
+  || fail "missing checkout error omitted its cause"
+ok "runtime checkout loss captures an operational error"
 
 printf '# all fm-procevent-linear-fmp tests passed\n'
