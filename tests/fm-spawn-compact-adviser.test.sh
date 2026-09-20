@@ -375,6 +375,12 @@ SH
     || fail "raw compound launch: the emitted launch failed to run"
   assert_equals 0 "$(probe_fact disable "$seen")" \
     "a raw compound launch must not force a compact-adviser value onto the agent, even after cd"
+  seen=$(env -i HOME="$TMP_ROOT/pane-home" PATH="$FAKEBIN_DIR:$PATH" TERM=xterm \
+    TMUX=synthetic-pane COMPACT_ADVISER_DISABLE="$OVERRIDE" \
+    /bin/sh -c "$launch") \
+    || fail "raw compound launch: the emitted launch failed to run under the override"
+  assert_equals 1 "$(probe_fact disable "$seen")" \
+    "an operator's kill switch must reach a raw compound launch, even after cd"
   pass "a compound raw launch-command leaves the compact adviser to the ambient environment"
 }
 
