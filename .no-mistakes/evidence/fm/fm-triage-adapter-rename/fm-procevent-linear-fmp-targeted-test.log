@@ -1,0 +1,25 @@
+ok - help renders only the complete header
+ok - source-id prints the canonical id
+ok - arm registers through the generic runner and retire disarms
+ok - arm refuses a checkout without the triage package
+ok - root resolution prefers the renamed checkout, keeps the legacy one, and refuses neither-layout
+ok - arm verifies ready delivery dependencies
+ok - poll captures exactly one ready event per result
+ok - poll stays silent inside the replay window
+ok - poll replays the same delivery after the replay window
+ok - receipt closes a delivery and poll advances to the next
+ok - receipt is idempotent
+ok - repeated poller failure captures one typed operational error
+ok - repeated ready failure captures its operational cause
+ok - replayed ready delivery preserves the poll failure budget
+ok - re-arm starts with a fresh poll failure budget
+ok - active re-arm preserves the poll failure budget
+ok - classify reports ready, error, and unknown
+ok - terminal retires only the operational error verdict
+ok - read renders the bounded intake summary with exact commands
+ok - read renders the error recovery summary
+ok - classify anchored on the document status line
+ok - ready passthrough lists unreceipted events
+ok - journal failure captures an operational error
+ok - runtime checkout loss captures an operational error
+# all fm-procevent-linear-fmp tests passed

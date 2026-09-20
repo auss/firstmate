@@ -1,0 +1,11 @@
+== default renamed checkout: ready ==
+{"schema_version":1,"kind":"fmp_linear_agent_ready","delivery_id":"fmp:live-rename-1:hash:readiness-v1","issue":{"id":"live-rename-1","url":"https://linear.app/auss/issue/FMP-TEST/rename","title":"isolated rename receipt","what_wrong":"old package name","intended":"current package","page_path":"/","evidence_omitted":[]},"evaluation":{"score":1,"probability":1.0,"policy_version":"readiness-v1","trace_id":"live-test"}}
+{"schema_version":1,"kind":"fmp_linear_agent_ready","delivery_id":"fmp:live-rename-2:hash:readiness-v1","issue":{"id":"live-rename-2","url":"https://linear.app/auss/issue/FMP-TEST/rename","title":"isolated explicit-root receipt","what_wrong":"old package name","intended":"current package","page_path":"/","evidence_omitted":[]},"evaluation":{"score":1,"probability":1.0,"policy_version":"readiness-v1","trace_id":"live-test"}}
+== default renamed checkout: receipt ==
+receipt recorded for fmp:live-rename-1:hash:readiness-v1
+== explicit renamed checkout: receipt ==
+receipt recorded for fmp:live-rename-2:hash:readiness-v1
+== outbox after receipts ==
+== adversarial poll: renamed package with only stale legacy cache ==
+linear-fmp: linear-fmp
+status: ready
