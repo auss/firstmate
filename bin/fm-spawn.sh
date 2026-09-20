@@ -4722,7 +4722,11 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
   # compact-adviser floor names: each forwards only what the pane shell
   # already carries, so an operator's kill switch survives the cleared
   # environment while the adviser stays free to activate when the session
-  # enabled it. Firstmate pins neither name to a literal value.
+  # enabled it. CLAUDE_CODE_ENABLE_FUNCTION_HOOKS is compact-adviser's Claude
+  # Code activation gate and also firstmate-calm's opt-in; Firstmate only
+  # forwards a value the launching session already carries and never sets it,
+  # while Calm remains off by default through config/calm.
+  # Firstmate pins neither name to a literal value.
   for env_name in HOME PATH USER LOGNAME SHELL TERM COLORTERM LANG LC_ALL LC_CTYPE \
     TMPDIR TMP TEMP GOTMPDIR TMUX TMUX_PANE HERDR_ENV HERDR_SESSION HERDR_SOCKET_PATH \
     HERDR_PANE_ID CMUX_WORKSPACE_ID CMUX_SURFACE_ID CMUX_TAB_ID CMUX_PANEL_ID \

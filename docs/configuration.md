@@ -427,6 +427,7 @@ Regression coverage executes emitted launch commands with synthetic nonsecret va
 Firstmate launches every crewmate, scout, and secondmate without setting `COMPACT_ADVISER_DISABLE`, on a fresh spawn and on a relaunch alike, so a launched agent can run the compact adviser exactly as the captain's own session does.
 This also covers raw launch commands and remote secondmates: Firstmate never pins the variable into any launch shape, and the value a launched agent sees comes from the environment that reaches it.
 Ambient names pass through by inheritance, and under `config/launch-env-allowlist` the operational floor forwards `COMPACT_ADVISER_DISABLE` and `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` from the destination pane without ever setting either itself.
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is compact-adviser's Claude Code activation gate and also firstmate-calm's opt-in; the floor only forwards a value the launching session already carries, never sets it, and Calm remains off by default through `config/calm`.
 An operator who exports `COMPACT_ADVISER_DISABLE=1` therefore keeps the kill switch honoured on both paths, with no Firstmate configuration or flag involved.
 [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, with focused regression coverage in [`tests/fm-spawn-compact-adviser.test.sh`](../tests/fm-spawn-compact-adviser.test.sh) and [`tests/fm-spawn-compact-adviser-remote.test.sh`](../tests/fm-spawn-compact-adviser-remote.test.sh).
 
