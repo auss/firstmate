@@ -399,7 +399,7 @@ OPENAI_API_KEY
 SSH_AUTH_SOCK
 ```
 
-Firstmate retains basic home, executable search, terminal, locale, temporary-directory, and backend routing variables, plus its explicit launch assignments, its ship and scout task marker, the compact-adviser kill switch described below, and enabled task trace.
+Firstmate retains basic home, executable search, terminal, locale, temporary-directory, and backend routing variables, plus its explicit launch assignments, its ship and scout task marker, the compact-adviser names described below, and enabled task trace.
 [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the exact retained names and parsing mechanics.
 Other ambient names must be listed explicitly, including custom credential-store locations, proxy settings, and certificate overrides when required by the selected tools.
 The command shell and worker may still create their own variables.
@@ -424,11 +424,11 @@ The filter runs at the worker command boundary, after the terminal daemon and pa
 This is not a sandbox: it cannot revoke same-user access to credential files, prevent tools or later shells from loading credentials again, or isolate processes from the same user's other processes.
 Regression coverage executes emitted launch commands with synthetic nonsecret values in [`tests/fm-spawn-dispatch-profile.test.sh`](../tests/fm-spawn-dispatch-profile.test.sh).
 
-Every crewmate, scout, and secondmate Firstmate launches starts with `COMPACT_ADVISER_DISABLE=1` in its environment, on a fresh spawn and on a relaunch alike, so an unattended session never activates the compact adviser.
-This guarantee also covers raw launch commands, remote secondmates, and launches filtered by `config/launch-env-allowlist`; it does not depend on the destination environment already containing the variable.
-Firstmate provides no configuration or flag to change this value.
-This applies only to agents Firstmate launches; the captain's own primary Firstmate session is never given the variable.
-[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, with focused regression coverage in [`tests/fm-spawn-compact-adviser-disable.test.sh`](../tests/fm-spawn-compact-adviser-disable.test.sh) and [`tests/fm-spawn-compact-adviser-disable-remote.test.sh`](../tests/fm-spawn-compact-adviser-disable-remote.test.sh).
+Firstmate launches every crewmate, scout, and secondmate without setting `COMPACT_ADVISER_DISABLE`, on a fresh spawn and on a relaunch alike, so a launched agent can run the compact adviser exactly as the captain's own session does.
+This also covers raw launch commands and remote secondmates: Firstmate never pins the variable into any launch shape, and the value a launched agent sees comes from the environment that reaches it.
+Ambient names pass through by inheritance, and under `config/launch-env-allowlist` the operational floor forwards `COMPACT_ADVISER_DISABLE` and `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` from the destination pane without ever setting either itself.
+An operator who exports `COMPACT_ADVISER_DISABLE=1` therefore keeps the kill switch honoured on both paths, with no Firstmate configuration or flag involved.
+[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, with focused regression coverage in [`tests/fm-spawn-compact-adviser.test.sh`](../tests/fm-spawn-compact-adviser.test.sh) and [`tests/fm-spawn-compact-adviser-remote.test.sh`](../tests/fm-spawn-compact-adviser-remote.test.sh).
 
 Every claude launch's inline `--settings` JSON also carries `"attribution":{"commit":"","pr":"","sessionUrl":false}`, so a spawned worker never writes a Co-Authored-By trailer, Claude-Session link, or generated-with line into a commit or PR body regardless of which settings scopes end up loaded.
 

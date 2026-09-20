@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# tests/fm-spawn-compact-adviser-disable.test.sh - every agent this fleet
-# launches must start with COMPACT_ADVISER_DISABLE=1 in its environment.
+# tests/fm-spawn-compact-adviser.test.sh - Firstmate launches agents without
+# pinning COMPACT_ADVISER_DISABLE, so the compact adviser follows the
+# launching session, while an operator's own kill switch still reaches the
+# agent.
 #
 # The assertions never read bin/fm-spawn.sh's source. They drive the real spawn
 # against a fake pane and a real isolated git worktree, then EXECUTE the launch
@@ -9,7 +11,7 @@
 # started with. What the probe prints is what a real agent would have received.
 #
 # The remote second-mate route never reaches this path; its coverage lives in
-# tests/fm-spawn-compact-adviser-disable-remote.test.sh.
+# tests/fm-spawn-compact-adviser-remote.test.sh.
 set -u
 
 # shellcheck source=tests/fixtures.sh
@@ -18,10 +20,12 @@ set -u
 CONTROL="$ROOT/bin/fm-control.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-compact-adviser)
 
-# A synthetic pane value the launch must override rather than inherit: the
-# switch is a floor, so a pane that already carries the wrong value still has to
-# start its agent with 1.
+# A synthetic pane value the launch must leave alone rather than override: the
+# default is pass-through, so a pane that already carries a value - an
+# operator's kill switch in either direction - must have that value reach the
+# agent unchanged.
 CONTRARY=0
+OVERRIDE=1
 
 # make_case <name> <harness> <id>...
 # Echoes "<case-dir>|<home>|<project>|<worktree>|<fakebin>|<launch-log>|<pane-log>".
@@ -56,49 +60,47 @@ run_case_spawn() {
     fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$@"
 }
 
-# Replace the harness binary with a probe that reports the single environment
-# fact under test, so executing the emitted launch answers "what would the agent
-# have seen" rather than "what does the command text look like".
+# Replace the harness binary with a probe that reports the two environment
+# facts under test, so executing the emitted launch answers "what would the
+# agent have seen" rather than "what does the command text look like".
 install_env_probe() {  # <fakebin> <harness>
   cat > "$1/$2" <<'SH'
 #!/bin/sh
-printf '%s\n' "${COMPACT_ADVISER_DISABLE-unset}"
+printf 'disable=%s\n' "${COMPACT_ADVISER_DISABLE-unset}"
+printf 'hooks=%s\n' "${CLAUDE_CODE_ENABLE_FUNCTION_HOOKS-unset}"
 SH
   chmod +x "$1/$2"
 }
 
-# Run the emitted launch command in a synthetic pane shell. The pane carries the
-# CONTRARY value, so a launch that merely forwarded the ambient environment
-# would be caught here rather than reported as a pass.
-#   emitted_launch_env <fakebin> <launch-log> <pane-log>
-emitted_launch_env() {
-  local fakebin=$1 launchlog=$2 panelog=$3 launch preamble
+probe_fact() {  # <field> <probe-output>
+  printf '%s\n' "$2" | sed -n "s/^$1=//p"
+}
+
+# Run the emitted launch command in a synthetic pane shell, first replaying the
+# pane exports the real pane shell received, in send order. Extra NAME=VALUE
+# arguments model what the destination pane environment carries; none models a
+# host that never set the names.
+#   replay_emitted_launch <fakebin> <launch-log> <pane-log> [NAME=VALUE]...
+replay_emitted_launch() {
+  local fakebin=$1 launchlog=$2 panelog=$3
+  shift 3
+  local launch preamble
   launch=$(cat "$launchlog")
-  # The pane exports run before the launch command in the real pane shell, so
-  # replay them here in the same order: the filtered launch environment retains
-  # what the pane holds, and dropping them would test a pane that never existed.
-  preamble=$(grep '^export ' "$panelog")
+  preamble=$(grep '^export ' "$panelog" || true)
   env -i HOME="$TMP_ROOT/pane-home" PATH="$fakebin:$PATH" TERM=xterm \
-    TMUX=synthetic-pane COMPACT_ADVISER_DISABLE="$CONTRARY" \
+    TMUX=synthetic-pane "$@" \
     /bin/sh -c "$preamble
 $launch"
 }
 
-pane_export_lines() { grep -c '^export COMPACT_ADVISER_DISABLE=1$' "$1" || true; }
-
-assert_pane_export_precedes_launch() {  # <pane-log> <label>
+# Firstmate must not deliver any compact-adviser value of its own: neither a
+# pre-launch pane export nor a launch-command assignment may exist.
+assert_no_spawned_disable() {  # <pane-log> <label>
   local panelog=$1 label=$2
-  [ "$(pane_export_lines "$panelog")" = 1 ] \
-    || fail "$label: the pane shell should receive exactly one compact-adviser export, got $(pane_export_lines "$panelog")"
-  # Ordering: the export must ride the same pre-launch site as GOTMPDIR, which
-  # is what makes it set before the agent process starts.
-  local gotmp switch
-  gotmp=$(grep -n '^export GOTMPDIR=' "$panelog" | tail -1 | cut -d: -f1)
-  switch=$(grep -n '^export COMPACT_ADVISER_DISABLE=1$' "$panelog" | tail -1 | cut -d: -f1)
-  [ -n "$gotmp" ] && [ -n "$switch" ] \
-    || fail "$label: the pane log is missing the pre-launch exports"
-  [ "$switch" -gt "$gotmp" ] \
-    || fail "$label: the compact-adviser export must ride the GOTMPDIR pre-launch site (gotmp=$gotmp switch=$switch)"
+  ! grep -q '^export COMPACT_ADVISER_DISABLE=' "$panelog" \
+    || fail "$label: the pane shell received a compact-adviser export Firstmate never sends"
+  grep -q '^export GOTMPDIR=' "$panelog" \
+    || fail "$label: the pane log is missing the pre-launch exports it should still carry"
 }
 
 test_ship_allowlist_absent() {
@@ -108,13 +110,23 @@ test_ship_allowlist_absent() {
   out=$(run_case_spawn ship-open-a1 "$PROJ_DIR" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "ship spawn without an allowlist should succeed: $out"
-  assert_pane_export_precedes_launch "$PANE_LOG" "ship, allowlist absent"
+  assert_no_spawned_disable "$PANE_LOG" "ship, allowlist absent"
   install_env_probe "$FAKEBIN_DIR" codex
-  seen=$(emitted_launch_env "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
+  seen=$(replay_emitted_launch "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
     || fail "ship, allowlist absent: the emitted launch failed to run"
-  assert_equals 1 "$seen" \
-    "a ship worker launched with the ambient environment must start with the compact adviser disabled"
-  pass "ship launch with no allowlist starts its agent with the compact-adviser switch on"
+  assert_equals unset "$(probe_fact disable "$seen")" \
+    "a ship worker launched on a host that never set the kill switch must not receive one"
+  assert_equals unset "$(probe_fact hooks "$seen")" \
+    "a ship worker launched on a host that never enabled function hooks must not receive the flag"
+  seen=$(replay_emitted_launch "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG" "COMPACT_ADVISER_DISABLE=$OVERRIDE") \
+    || fail "ship, allowlist absent: the emitted launch failed to run under the override"
+  assert_equals 1 "$(probe_fact disable "$seen")" \
+    "an operator's kill switch in the pane environment must reach a ship worker by inheritance"
+  seen=$(replay_emitted_launch "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG" "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1") \
+    || fail "ship, allowlist absent: the emitted launch failed to run with function hooks on"
+  assert_equals 1 "$(probe_fact hooks "$seen")" \
+    "a function-hooks opt-in in the pane environment must reach a ship worker by inheritance"
+  pass "ship launch with no allowlist leaves the compact adviser to the ambient environment"
 }
 
 test_ship_allowlist_enabled() {
@@ -128,22 +140,32 @@ test_ship_allowlist_enabled() {
   out=$(run_case_spawn ship-filtered-a1 "$PROJ_DIR" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "ship spawn under an allowlist should succeed: $out"
-  assert_pane_export_precedes_launch "$PANE_LOG" "ship, allowlist enabled"
+  assert_no_spawned_disable "$PANE_LOG" "ship, allowlist enabled"
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" '/usr/bin/env -i' \
     "an enabled allowlist should launch under a cleared environment"
   install_env_probe "$FAKEBIN_DIR" codex
-  seen=$(emitted_launch_env "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
+  seen=$(replay_emitted_launch "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
     || fail "ship, allowlist enabled: the emitted launch failed to run"
-  assert_equals 1 "$seen" \
-    "a ship worker launched under the cleared allowlisted environment must still start with the compact adviser disabled"
-  pass "ship launch under an enabled allowlist keeps the compact-adviser switch through the cleared environment"
+  assert_equals unset "$(probe_fact disable "$seen")" \
+    "the cleared environment must not invent a compact-adviser kill switch"
+  assert_equals unset "$(probe_fact hooks "$seen")" \
+    "the cleared environment must not invent a function-hooks opt-in"
+  seen=$(replay_emitted_launch "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG" "COMPACT_ADVISER_DISABLE=$OVERRIDE") \
+    || fail "ship, allowlist enabled: the emitted launch failed to run under the override"
+  assert_equals 1 "$(probe_fact disable "$seen")" \
+    "the operational floor must forward an operator's kill switch through the cleared environment"
+  seen=$(replay_emitted_launch "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG" "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1") \
+    || fail "ship, allowlist enabled: the emitted launch failed to run with function hooks on"
+  assert_equals 1 "$(probe_fact hooks "$seen")" \
+    "the operational floor must forward the function-hooks opt-in through the cleared environment"
+  pass "ship launch under an enabled allowlist forwards both compact-adviser names without setting either"
 }
 
-# The floor must not depend on the pane export having landed: a pane whose
-# export was lost still has to launch its agent with the switch on. Replaying
-# the launch alone, with a contrary ambient value, is that case.
-test_launch_command_carries_the_switch_without_the_pane_export() {
+# The pass-through must not depend on the pane exports having landed, and no
+# launch-command assignment may reintroduce a value. Replaying the launch
+# alone, with a contrary ambient value, is that case.
+test_launch_command_never_pins_the_switch() {
   local setting rec out status seen launch
   for setting in absent enabled; do
     rec=$(make_case "ship-nopane-$setting" codex "ship-nopane-$setting-a1")
@@ -158,10 +180,10 @@ test_launch_command_carries_the_switch_without_the_pane_export() {
       TMUX=synthetic-pane COMPACT_ADVISER_DISABLE="$CONTRARY" \
       /bin/sh -c "$launch") \
       || fail "allowlist=$setting: the emitted launch failed to run without the pane exports"
-    assert_equals 1 "$seen" \
-      "allowlist=$setting: the launch command alone must set the compact-adviser switch, overriding a contrary pane value"
+    assert_equals 0 "$(probe_fact disable "$seen")" \
+      "allowlist=$setting: the launch command alone must not override a contrary pane value"
   done
-  pass "the launch command sets the switch on its own, whichever allowlist posture is in force"
+  pass "the launch command pins no compact-adviser value, whichever allowlist posture is in force"
 }
 
 test_secondmate_launch() {
@@ -178,14 +200,18 @@ test_secondmate_launch() {
     out=$(run_case_spawn "sm-$setting" "$sm" --secondmate)
     status=$?
     expect_code 0 "$status" "secondmate spawn with allowlist=$setting should succeed: $out"
-    assert_pane_export_precedes_launch "$PANE_LOG" "secondmate, allowlist $setting"
+    assert_no_spawned_disable "$PANE_LOG" "secondmate, allowlist $setting"
     install_env_probe "$FAKEBIN_DIR" codex
-    seen=$(emitted_launch_env "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
+    seen=$(replay_emitted_launch "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
       || fail "secondmate, allowlist $setting: the emitted launch failed to run"
-    assert_equals 1 "$seen" \
-      "a secondmate launched with allowlist=$setting must start with the compact adviser disabled"
+    assert_equals unset "$(probe_fact disable "$seen")" \
+      "a secondmate launched with allowlist=$setting must not receive a kill switch nobody set"
+    seen=$(replay_emitted_launch "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG" "COMPACT_ADVISER_DISABLE=$OVERRIDE") \
+      || fail "secondmate, allowlist $setting: the emitted launch failed to run under the override"
+    assert_equals 1 "$(probe_fact disable "$seen")" \
+      "an operator's kill switch must reach a secondmate with allowlist=$setting"
   done
-  pass "a secondmate launch carries the compact-adviser switch in both allowlist postures"
+  pass "a secondmate launch leaves the compact adviser to the pane environment in both allowlist postures"
 }
 
 # --- relaunch ---------------------------------------------------------------
@@ -253,7 +279,7 @@ SH
   chmod +x "$fb/sleep"
 }
 
-test_relaunch_rebuilds_the_switch() {
+test_relaunch_keeps_the_pass_through() {
   local setting dir home proj wt id out status seen launch preamble
   for setting in absent enabled; do
     id="relaunch-$setting-a1"
@@ -294,28 +320,35 @@ test_relaunch_rebuilds_the_switch() {
     status=$?
     expect_code 0 "$status" "relaunch with allowlist=$setting should succeed: $out"
 
-    grep -qx 'export COMPACT_ADVISER_DISABLE=1' "$dir/fake/keys" \
-      || fail "relaunch with allowlist=$setting did not re-export the compact-adviser switch into the pane"
+    ! grep -q '^export COMPACT_ADVISER_DISABLE=' "$dir/fake/keys" \
+      || fail "relaunch with allowlist=$setting re-exported a compact-adviser value into the pane"
     launch=$(grep 'encode launch-brief' "$dir/fake/literal" | tail -1)
     [ -n "$launch" ] || fail "relaunch with allowlist=$setting sent no replacement launch command"
     install_env_probe "$dir/fakebin" codex
-    preamble=$(grep '^export ' "$dir/fake/keys")
+    preamble=$(grep '^export ' "$dir/fake/keys" || true)
     seen=$(env -i HOME="$dir/user-home" PATH="$dir/fakebin:$PATH" TERM=xterm \
-      TMUX=synthetic-pane COMPACT_ADVISER_DISABLE="$CONTRARY" \
+      TMUX=synthetic-pane COMPACT_ADVISER_DISABLE="$OVERRIDE" \
       /bin/sh -c "$preamble
 $launch") \
       || fail "relaunch with allowlist=$setting: the replacement launch failed to run"
-    assert_equals 1 "$seen" \
-      "a relaunched agent with allowlist=$setting must start with the compact adviser disabled, exactly as a fresh spawn does"
+    assert_equals 1 "$(probe_fact disable "$seen")" \
+      "an operator's kill switch must reach a relaunched agent with allowlist=$setting, exactly as a fresh spawn"
+    seen=$(env -i HOME="$dir/user-home" PATH="$dir/fakebin:$PATH" TERM=xterm \
+      TMUX=synthetic-pane \
+      /bin/sh -c "$preamble
+$launch") \
+      || fail "relaunch with allowlist=$setting: the replacement launch failed to run unset"
+    assert_equals unset "$(probe_fact disable "$seen")" \
+      "a relaunched agent with allowlist=$setting must not receive a kill switch nobody set"
   done
-  pass "relaunch rebuilds the compact-adviser switch for the replacement agent in both allowlist postures"
+  pass "relaunch keeps the compact adviser following the pane environment in both allowlist postures"
 }
 
 # A command-prefix assignment only covers the first simple command. A raw
-# compound launch such as `cd <dir> && <probe>` must still start the probe with
-# the switch on, so this drives that escape hatch and executes the pane's
-# launch under a contrary ambient value.
-test_raw_compound_launch_command_carries_the_switch() {
+# compound launch such as `cd <dir> && <probe>` must carry no forced value
+# either, so this drives that escape hatch and executes the pane's launch under
+# a contrary ambient value.
+test_raw_compound_launch_command_pins_nothing() {
   local rec out status seen launch probe_dir
   rec=$(make_case raw-compound claude raw-compound-a1)
   read_case "$rec"
@@ -326,7 +359,7 @@ test_raw_compound_launch_command_carries_the_switch() {
   mkdir -p "$probe_dir"
   cat > "$probe_dir/probe" <<'SH'
 #!/bin/sh
-printf '%s\n' "${COMPACT_ADVISER_DISABLE-unset}"
+printf 'disable=%s\n' "${COMPACT_ADVISER_DISABLE-unset}"
 SH
   chmod +x "$probe_dir/probe"
 
@@ -340,14 +373,14 @@ SH
     TMUX=synthetic-pane COMPACT_ADVISER_DISABLE="$CONTRARY" \
     /bin/sh -c "$launch") \
     || fail "raw compound launch: the emitted launch failed to run"
-  assert_equals 1 "$seen" \
-    "a raw compound launch must start its agent with the compact adviser disabled, even after cd"
-  pass "a compound raw launch-command still starts its agent with the compact-adviser switch on"
+  assert_equals 0 "$(probe_fact disable "$seen")" \
+    "a raw compound launch must not force a compact-adviser value onto the agent, even after cd"
+  pass "a compound raw launch-command leaves the compact adviser to the ambient environment"
 }
 
 test_ship_allowlist_absent
 test_ship_allowlist_enabled
-test_launch_command_carries_the_switch_without_the_pane_export
+test_launch_command_never_pins_the_switch
 test_secondmate_launch
-test_relaunch_rebuilds_the_switch
-test_raw_compound_launch_command_carries_the_switch
+test_relaunch_keeps_the_pass_through
+test_raw_compound_launch_command_pins_nothing

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# tests/fm-spawn-compact-adviser-disable-remote.test.sh - the compact-adviser
-# kill switch must reach a second mate that Firstmate launches on another host.
+# tests/fm-spawn-compact-adviser-remote.test.sh - a second mate that Firstmate
+# launches on another host follows that host's compact-adviser environment:
+# Firstmate pins no value into the remote launch, while an operator's kill
+# switch still reaches the remote agent.
 #
 # A remote second mate never reaches the local spawn path covered by
-# tests/fm-spawn-compact-adviser-disable.test.sh: bin/fm-spawn.sh routes it
+# tests/fm-spawn-compact-adviser.test.sh: bin/fm-spawn.sh routes it
 # through spawn_remote_secondmate, which hands the launch across the transport
 # to the remote host's own fm-spawn. These assertions drive that real chain -
 # parent fm-spawn -> fm-on -> the real remote entrypoint ->
@@ -34,9 +36,10 @@ mkdir -p "$PARENT/data" "$PARENT/state" "$PARENT/config" "$PARENT/projects" \
   "$REMOTE_ROOT" "$CLAIMS" "$PROBEBIN" "$TMP_ROOT/pane-home"
 trap 'FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true; if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
 
-# A synthetic value the remote launch must override rather than inherit, so a
-# launch that only forwarded the ambient environment cannot pass as a floor.
+# A synthetic pane value the remote launch must leave alone rather than
+# override, and the operator kill switch that must reach the agent.
 CONTRARY=0
+OVERRIDE=1
 
 # The remote host's tracked code root is this branch, as a real git repository:
 # fm-on and the remote entrypoint both require the dispatched command to be
@@ -85,10 +88,11 @@ SH
 chmod +x "$FAKEBIN/fake-ssh"
 
 # The harness the remote pane would have started, replaced by a probe that
-# reports the one environment fact under test.
+# reports the two environment facts under test.
 cat > "$PROBEBIN/codex" <<'SH'
 #!/bin/sh
-printf '%s\n' "${COMPACT_ADVISER_DISABLE-unset}"
+printf 'disable=%s\n' "${COMPACT_ADVISER_DISABLE-unset}"
+printf 'hooks=%s\n' "${CLAUDE_CODE_ENABLE_FUNCTION_HOOKS-unset}"
 SH
 chmod +x "$PROBEBIN/codex"
 
@@ -145,37 +149,51 @@ run_remote_launch() {  # <label>
     || fail "$label: the remote second-mate launch failed"
 }
 
+probe_fact() {  # <field> <probe-output>
+  printf '%s\n' "$2" | sed -n "s/^$1=//p"
+}
+
 # Replay what the remote pane received, in the order it received it, under a
-# synthetic pane environment carrying the contrary value.
-replay_remote_launch() {  # <preamble|bare>
+# synthetic pane environment. The shape chooses whether the pane exports are
+# replayed ahead of the launch; extra NAME=VALUE arguments model what the
+# remote pane environment carries.
+replay_remote_launch() {  # <preamble|bare> [NAME=VALUE]...
   local shape=$1 preamble='' launch
+  shift
   launch=$(remote_launch_command)
   [ -n "$launch" ] || fail "the remote pane received no launch command"
   [ "$shape" = bare ] || preamble=$(remote_pane_exports)
   env -i HOME="$TMP_ROOT/pane-home" PATH="$PROBEBIN:$PATH" TERM=xterm \
-    COMPACT_ADVISER_DISABLE="$CONTRARY" \
+    "$@" \
     /bin/sh -c "$preamble
 $launch"
 }
 
-# --- the remote route delivers the switch, allowlist absent -----------------
+# --- the remote route pins no value, allowlist absent -----------------------
 run_remote_launch 'allowlist absent'
-remote_pane_exports | grep -qx 'export COMPACT_ADVISER_DISABLE=1' \
-  || fail "the remote pane shell never received the compact-adviser export"
+remote_pane_exports | grep -q '^export COMPACT_ADVISER_DISABLE=' \
+  && fail "the remote pane shell received a compact-adviser export Firstmate never sends"
+remote_pane_exports | grep -q '^export GOTMPDIR=' \
+  || fail "the remote pane log is missing the pre-launch exports it should still carry"
 SEEN=$(replay_remote_launch preamble) \
   || fail "the command the remote pane received failed to run"
-assert_equals 1 "$SEEN" \
-  "a second mate launched on a remote host must start with the compact adviser disabled"
-SEEN=$(replay_remote_launch bare) \
+assert_equals unset "$(probe_fact disable "$SEEN")" \
+  "a second mate launched on a remote host that never set the kill switch must not receive one"
+SEEN=$(replay_remote_launch preamble "COMPACT_ADVISER_DISABLE=$OVERRIDE") \
+  || fail "the remote launch with the operator override failed to run"
+assert_equals 1 "$(probe_fact disable "$SEEN")" \
+  "an operator's kill switch in the remote pane environment must reach the remote second mate by inheritance"
+SEEN=$(replay_remote_launch bare "COMPACT_ADVISER_DISABLE=$CONTRARY") \
   || fail "the remote launch command failed to run on its own"
-assert_equals 1 "$SEEN" \
-  "the remote launch command must set the compact-adviser switch on its own, overriding a contrary remote pane value"
-pass "a remote-routed second mate starts with the compact adviser disabled, from the pane export and from the launch command alike"
+assert_equals 0 "$(probe_fact disable "$SEEN")" \
+  "the remote launch command alone must not override a contrary remote pane value"
+pass "a remote-routed second mate follows the remote pane environment, from the pane exports and the launch command alike"
 
 # --- the same holds through the cleared allowlisted environment -------------
 # The allowlist is inherited local material, so the parent's opt-in is what puts
-# the remote launch under /usr/bin/env -i. The switch is a floor, so it has to
-# survive that host's cleared environment although nothing there ever set it.
+# the remote launch under /usr/bin/env -i. The floor forwards the two
+# compact-adviser names without setting either, so a kill switch and a
+# function-hooks opt-in both survive the cleared environment.
 : > "$PARENT/config/launch-env-allowlist"
 run_remote_launch 'allowlist enabled'
 assert_present "$REMOTE_HOME/config/launch-env-allowlist" \
@@ -185,8 +203,18 @@ assert_contains "$LAUNCH" '/usr/bin/env -i' \
   "an inherited allowlist should launch the remote second mate under a cleared environment"
 SEEN=$(replay_remote_launch bare) \
   || fail "the cleared-environment remote launch failed to run"
-assert_equals 1 "$SEEN" \
-  "a remote second mate launched under the cleared allowlisted environment must still start with the compact adviser disabled"
-pass "the remote route keeps the compact-adviser switch through the cleared allowlisted environment"
+assert_equals unset "$(probe_fact disable "$SEEN")" \
+  "the remote cleared environment must not invent a compact-adviser kill switch"
+assert_equals unset "$(probe_fact hooks "$SEEN")" \
+  "the remote cleared environment must not invent a function-hooks opt-in"
+SEEN=$(replay_remote_launch bare "COMPACT_ADVISER_DISABLE=$OVERRIDE") \
+  || fail "the cleared-environment remote launch with the override failed to run"
+assert_equals 1 "$(probe_fact disable "$SEEN")" \
+  "an operator's kill switch must survive the remote cleared environment through the operational floor"
+SEEN=$(replay_remote_launch bare "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1") \
+  || fail "the cleared-environment remote launch with function hooks on failed to run"
+assert_equals 1 "$(probe_fact hooks "$SEEN")" \
+  "a function-hooks opt-in must survive the remote cleared environment through the operational floor"
+pass "the remote route forwards both compact-adviser names through the cleared allowlisted environment"
 
 echo "ALL TESTS PASSED"
