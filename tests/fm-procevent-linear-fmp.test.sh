@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Behavioral tests for bin/fm-procevent-linear-fmp.sh against a fake
-# fmp-bugpin-triage checkout that implements the poll/ready/receipt CLI
-# contract. No network, no model calls, no Telegram.
+# Behavioral tests for bin/fm-procevent-linear-fmp.sh against fake triage
+# checkouts (current and legacy package layouts) that implement the
+# poll/ready/receipt CLI contract. No network, no model calls, no Telegram.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -21,10 +21,11 @@ ok() { printf 'ok - %s\n' "$1"; }
 # Fake triage package: poll honors FAKE_POLL_RC, ready cats FAKE_READY_FILE,
 # receipt records into FAKE_RECEIPTS. This is the public CLI surface the real
 # adapter runs, exercised without any live source.
-make_fake_triage() {  # <dir>
-  mkdir -p "$1/fmp_bugpin_triage"
-  printf '"""fake triage package for adapter tests"""\n' > "$1/fmp_bugpin_triage/__init__.py"
-  cat > "$1/fmp_bugpin_triage/cli.py" <<'PY'
+make_fake_triage() {  # <dir> [package]
+  local pkg=${2:-fmp_triage}
+  mkdir -p "$1/$pkg"
+  printf '"""fake triage package for adapter tests"""\n' > "$1/$pkg/__init__.py"
+  cat > "$1/$pkg/cli.py" <<'PY'
 import json
 import os
 import sys
@@ -112,7 +113,7 @@ ok "source-id prints the canonical id"
 
 # arm: default root resolution, real registration, then retire.
 mkdir -p "$LAB/projects"
-make_fake_triage "$LAB/projects/fmp-bugpin-triage"
+make_fake_triage "$LAB/projects/fmp-bugpin-triage" fmp_bugpin_triage
 arm_out=$(FM_LINEAR_FMP_ROOT='' "$FM_LFP" arm --interval 60) || fail "arm failed: $arm_out"
 printf '%s\n' "$arm_out" | grep -qx 'armed: linear-fmp' || fail "arm did not report armed"
 printf '%s\n' "$arm_out" | grep -q 'never spawns ships' \
@@ -132,6 +133,29 @@ if "$FM_LFP" arm --root "$LAB/empty-root" 2>/dev/null; then
   fail "arm accepted a checkout with no triage package"
 fi
 ok "arm refuses a checkout without the triage package"
+
+# Root resolution regression: the renamed checkout wins while both exist,
+# the legacy checkout still resolves alone, and an explicit --root carrying
+# neither layout is refused instead of silently falling back.
+make_fake_triage "$LAB/projects/fmp-triage" fmp_triage
+arm_out=$(FM_LINEAR_FMP_ROOT='' "$FM_LFP" arm --interval 60) \
+  || fail "arm failed with the renamed checkout present: $arm_out"
+printf '%s\n' "$arm_out" | grep -qx "root: $LAB/projects/fmp-triage" \
+  || fail "arm did not prefer the renamed checkout"
+"$FM_LFP" retire >/dev/null 2>&1 || fail "retire failed"
+rm -rf "$LAB/projects/fmp-triage"
+arm_out=$(FM_LINEAR_FMP_ROOT='' "$FM_LFP" arm --interval 60) \
+  || fail "arm failed with only the legacy checkout present: $arm_out"
+printf '%s\n' "$arm_out" | grep -qx "root: $LAB/projects/fmp-bugpin-triage" \
+  || fail "arm no longer resolves the legacy checkout"
+"$FM_LFP" retire >/dev/null 2>&1 || fail "retire failed"
+mkdir -p "$LAB/neither-root"
+if arm_err=$("$FM_LFP" arm --root "$LAB/neither-root" 2>&1); then
+  fail "arm silently fell back from a neither-layout --root"
+fi
+printf '%s\n' "$arm_err" | grep -q "triage checkout is unavailable: $LAB/neither-root" \
+  || fail "arm error did not name the refused checkout"
+ok "root resolution prefers the renamed checkout, keeps the legacy one, and refuses neither-layout"
 
 # The command only arms when every runtime dependency for delivery exists.
 make_tool_path() {  # <dir> [extra command...]

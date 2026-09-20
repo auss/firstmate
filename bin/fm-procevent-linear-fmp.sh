@@ -14,12 +14,14 @@
 #
 # arm        Validate and register the recurring Linear FMP readiness watch
 #            through `bin/fm-procevent.sh register`. The triage checkout
-#            defaults to `$FM_HOME/projects/fmp-bugpin-triage` and can be
-#            pinned with --root or FM_LINEAR_FMP_ROOT. This adapter never
-#            spawns ships: a ready ticket is intake evidence only.
+#            defaults to `$FM_HOME/projects/fmp-triage`, falling back to a
+#            legacy `fmp-bugpin-triage` checkout when the renamed one is
+#            absent, and can be pinned with --root or FM_LINEAR_FMP_ROOT.
+#            This adapter never spawns ships: a ready ticket is intake
+#            evidence only.
 # poll       The blocking child the generic runner executes; never run this
 #            directly in a conversational turn. Each pass runs the landed
-#            fmp-bugpin-triage poller (Linear team FMP, one traced TypeSafe
+#            fmp-triage poller (Linear team FMP, one traced TypeSafe
 #            Choice per unseen material hash, Telegram for score 0) and then
 #            reads its unreceipted ready events. One ready event per capture:
 #            when the oldest unreceipted event was not emitted within the
@@ -76,7 +78,10 @@ DEFAULT_INTERVAL=300
 DEFAULT_POLL_TIMEOUT=900
 DEFAULT_REPLAY=1800
 DEFAULT_ERROR_BUDGET=5
-TRIAGE_DIR_NAME=fmp-bugpin-triage
+TRIAGE_DIR_NAME=fmp-triage
+TRIAGE_LEGACY_DIR_NAME=fmp-bugpin-triage
+TRIAGE_PACKAGE=fmp_triage
+TRIAGE_LEGACY_PACKAGE=fmp_bugpin_triage
 JOURNAL_DIR="$STATE/$CANONICAL_SOURCE_ID"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
@@ -86,7 +91,17 @@ case "${1-}" in ''|-h|--help|help) usage ;; esac
 
 positive_int() { case "${1-}" in ''|*[!0-9]*) return 1 ;; 0) return 1 ;; *) return 0 ;; esac }
 
-default_root() { printf '%s/projects/%s\n' "$FM_HOME" "$TRIAGE_DIR_NAME"; }
+# default_root
+# The home's projects checkout: current name first, legacy name second, and
+# the current path again when neither carries the triage package, so the
+# validation error still names the expected default.
+default_root() {
+  local candidate
+  for candidate in "$FM_HOME/projects/$TRIAGE_DIR_NAME" "$FM_HOME/projects/$TRIAGE_LEGACY_DIR_NAME"; do
+    root_valid "$candidate" && { printf '%s\n' "$candidate"; return 0; }
+  done
+  printf '%s/projects/%s\n' "$FM_HOME" "$TRIAGE_DIR_NAME"
+}
 
 # resolve_root [requested]
 # --root wins, then FM_LINEAR_FMP_ROOT, then the home's projects checkout.
@@ -105,8 +120,23 @@ validate_root() {
 }
 
 root_valid() {  # <root>
-  [ -d "$1" ] && [ ! -L "$1" ] \
-    && [ -f "$1/fmp_bugpin_triage/cli.py" ] && [ ! -L "$1/fmp_bugpin_triage/cli.py" ]
+  [ -d "$1" ] && [ ! -L "$1" ] || return 1
+  if [ -f "$1/$TRIAGE_PACKAGE/cli.py" ] && [ ! -L "$1/$TRIAGE_PACKAGE/cli.py" ]; then
+    return 0
+  fi
+  [ -f "$1/$TRIAGE_LEGACY_PACKAGE/cli.py" ] && [ ! -L "$1/$TRIAGE_LEGACY_PACKAGE/cli.py" ]
+}
+
+# triage_module <root>
+# The package name the checkout carries, current layout first; fails when
+# neither layout is present.
+triage_module() {
+  if [ -f "$1/$TRIAGE_PACKAGE/cli.py" ]; then
+    printf '%s\n' "$TRIAGE_PACKAGE"
+    return 0
+  fi
+  [ -f "$1/$TRIAGE_LEGACY_PACKAGE/cli.py" ] || return 1
+  printf '%s\n' "$TRIAGE_LEGACY_PACKAGE"
 }
 
 # triage_cli <root> <timeout-secs> <command...>
@@ -118,10 +148,11 @@ run_triage() {
   shift 2
   TRIAGE_OUT=
   TRIAGE_ERR=
-  local out err rc
+  local out err rc module
+  module=$(triage_module "$root") || { TRIAGE_ERR="no triage package in $root"; return 1; }
   out=$(mktemp "${TMPDIR:-/tmp}/fm-linear-fmp.XXXXXX") || return 125
   err=$(mktemp "${TMPDIR:-/tmp}/fm-linear-fmp.XXXXXX") || { rm -f -- "$out"; return 125; }
-  if ( cd "$root" 2>/dev/null && fm_run_timed "$timeout" python3 -m fmp_bugpin_triage.cli "$@" ) > "$out" 2> "$err"; then
+  if ( cd "$root" 2>/dev/null && fm_run_timed "$timeout" python3 -m "$module.cli" "$@" ) > "$out" 2> "$err"; then
     rc=0
   else
     rc=$?
@@ -202,7 +233,7 @@ cmd_ready() {
 }
 
 cmd_arm() {
-  local root='' interval=$DEFAULT_INTERVAL poll_timeout=$DEFAULT_POLL_TIMEOUT replay=$DEFAULT_REPLAY budget=$DEFAULT_ERROR_BUDGET registered_before=0
+  local root='' interval=$DEFAULT_INTERVAL poll_timeout=$DEFAULT_POLL_TIMEOUT replay=$DEFAULT_REPLAY budget=$DEFAULT_ERROR_BUDGET registered_before=0 module
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --root)         [ "$#" -ge 2 ] || die "--root needs a path"; root=$2; shift 2 ;;
@@ -217,7 +248,8 @@ cmd_arm() {
   validate_root "$root"
   root=$(cd "$root" && pwd -P) || die "cannot resolve the triage checkout path"
   command -v python3 >/dev/null 2>&1 || die "python3 is not available"
-  ( cd "$root" && fm_run_timed 30 python3 -c 'import fmp_bugpin_triage' ) >/dev/null 2>&1 \
+  module=$(triage_module "$root") || die "triage checkout is unavailable: $root"
+  ( cd "$root" && fm_run_timed 30 python3 -c "import $module" ) >/dev/null 2>&1 \
     || die "the triage package does not import under python3: $root"
   command -v jq >/dev/null 2>&1 || die "jq is not available"
   command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1 \

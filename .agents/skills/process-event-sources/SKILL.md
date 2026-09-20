@@ -64,7 +64,7 @@ bin/fm-procevent-quota.sh arm [--interval <secs>] [--threshold <percent>] [--pro
 
 It keeps polling through unknown quota and wakes when known quota drops below the configured threshold, runway becomes `exhausted_now`, or polling fails.
 
-For the recurring FMP Linear triage watch (agent-ready tickets from the local `fmp-bugpin-triage` poller), arm its built-in adapter:
+For the recurring FMP Linear triage watch (agent-ready tickets from the local `fmp-triage` poller), arm its built-in adapter:
 
 ```sh
 bin/fm-procevent-linear-fmp.sh arm
