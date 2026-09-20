@@ -1,0 +1,20 @@
+marcin@ai-workspace:~/.no-mistakes/worktrees/c7b2df826ee7/01M2Z68QNQJQYD4Q150WJE6YSY/.live-compact-validate/project$ tre
+ehouse get
+🌳 Setting up worktree...
+🌳 Entered worktree at ~/.treehouse/project-1e11bd/1/project. Type 'exit' to return.
+marcin@ai-workspace:~/.treehouse/project-1e11bd/1/project$ export GOTMPDIR=/tmp/fm-compact-clean-live/gotmp
+marcin@ai-workspace:~/.treehouse/project-1e11bd/1/project$ export FM_TASK_ID=compact-clean-live
+marcin@ai-workspace:~/.treehouse/project-1e11bd/1/project$ . '/tmp/fm-compact-clean-live+9cae1fd166ad95c5b18dd3f3e62a17b
+cb46895fff91866bd3b3b5a1c16ad6724/launch.s1789903134.1970630.26466.sh'
+compact_disable=unset
+function_hooks=1
+marcin@ai-workspace:~/.no-mistakes/worktrees/c7b2df826ee7/01M2Z68QNQJQYD4Q150WJE6YSY/.live-compact-validate/project$ tre
+ehouse get
+🌳 Setting up worktree...
+🌳 Entered worktree at ~/.treehouse/project-1e11bd/1/project. Type 'exit' to return.
+marcin@ai-workspace:~/.treehouse/project-1e11bd/1/project$ export GOTMPDIR=/tmp/fm-compact-allowlist/gotmp
+marcin@ai-workspace:~/.treehouse/project-1e11bd/1/project$ export FM_TASK_ID=compact-allowlist
+marcin@ai-workspace:~/.treehouse/project-1e11bd/1/project$ . '/tmp/fm-compact-allowlist+9cae1fd166ad95c5b18dd3f3e62a17bc
+b46895fff91866bd3b3b5a1c16ad6724/launch.s1789903178.1978710.22235.sh'
+allowlist_compact_disable=unset
+allowlist_function_hooks=1
